@@ -1,0 +1,415 @@
+import json
+import os
+import threading
+import time
+import urllib.request
+import urllib.parse
+import urllib.error
+import zipfile
+
+
+CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
+
+
+def load_credentials():
+    if os.path.exists(CREDENTIALS_FILE):
+        with open(CREDENTIALS_FILE, "r") as f:
+            return json.load(f)
+    return None
+
+
+def save_credentials(creds):
+    with open(CREDENTIALS_FILE, "w") as f:
+        json.dump(creds, f, indent=2)
+
+
+def clear_credentials():
+    if os.path.exists(CREDENTIALS_FILE):
+        os.remove(CREDENTIALS_FILE)
+
+
+def login(email, password):
+    data = urllib.parse.urlencode({"email": email, "password": password}).encode()
+    req = urllib.request.Request(
+        "https://archive.org/services/xauthn/?op=login",
+        data=data,
+        headers={
+            "User-Agent": ArchiveAPI.USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            return {"success": False, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    if result.get("success"):
+        values = result.get("values", {})
+        cookies = values.get("cookies", {})
+        creds = {
+            "email": email,
+            "logged_in_user": cookies.get("logged-in-user", ""),
+            "logged_in_sig": cookies.get("logged-in-sig", ""),
+            "s3_access": values.get("s3", {}).get("access", ""),
+            "s3_secret": values.get("s3", {}).get("secret", ""),
+        }
+        save_credentials(creds)
+        return {"success": True, "email": email}
+    else:
+        reason = result.get("values", {}).get("reason", "Login failed")
+        friendly = {
+            "account_bad_password": "Wrong password",
+            "account_not_found": "Account not found",
+        }
+        return {"success": False, "error": friendly.get(reason, reason)}
+
+
+def get_auth_cookies():
+    creds = load_credentials()
+    if creds and creds.get("logged_in_user") and creds.get("logged_in_sig"):
+        return f"logged-in-user={creds['logged_in_user']}; logged-in-sig={creds['logged_in_sig']}"
+    return None
+
+
+class ArchiveAPI:
+    USER_AGENT = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"
+    TIMEOUT = 30
+    MAX_RETRIES = 2
+
+    def _request(self, url, timeout=None):
+        if timeout is None:
+            timeout = self.TIMEOUT
+        last_err = None
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                headers = {"User-Agent": self.USER_AGENT}
+                cookies = get_auth_cookies()
+                if cookies:
+                    headers["Cookie"] = cookies
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                last_err = e
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(1)
+        raise last_err
+
+    def search(self, query, page=1, rows=50):
+        params = {
+            "q": query,
+            "fl[]": ["identifier", "title", "description", "item_count", "downloads"],
+            "sort[]": "downloads desc",
+            "rows": str(rows),
+            "page": str(page),
+            "output": "json",
+        }
+        url = "https://archive.org/advancedsearch.php?" + urllib.parse.urlencode(params, doseq=True)
+        try:
+            data = self._request(url)
+            docs = data.get("response", {}).get("docs", [])
+            total = data.get("response", {}).get("numFound", 0)
+            return {"items": docs, "total": total, "page": page, "error": None}
+        except Exception as e:
+            return {"items": [], "total": 0, "page": page, "error": str(e)}
+
+    def get_metadata(self, identifier):
+        url = f"https://archive.org/metadata/{urllib.parse.quote(identifier)}"
+        try:
+            return self._request(url, timeout=45)
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_files(self, identifier, extensions=None):
+        meta = self.get_metadata(identifier)
+        if "error" in meta and meta.get("files") is None:
+            return {"files": [], "error": meta.get("error"), "login_required": False}
+
+        server = meta.get("d1") or meta.get("d2") or meta.get("server", "")
+        dir_path = meta.get("dir", "")
+
+        collections = meta.get("metadata", {}).get("collection", [])
+        if isinstance(collections, str):
+            collections = [collections]
+        login_required = "loggedin" in collections
+
+        files = []
+        for f in meta.get("files", []):
+            name = f.get("name", "")
+            ext = os.path.splitext(name)[1].lower()
+            if extensions and ext not in extensions:
+                continue
+            size = int(f.get("size", 0)) if f.get("size") else 0
+            if server and dir_path:
+                url = f"https://{server}{dir_path}/{urllib.parse.quote(name)}"
+            else:
+                url = f"https://archive.org/download/{urllib.parse.quote(identifier)}/{urllib.parse.quote(name)}"
+            files.append({
+                "name": name,
+                "size": size,
+                "format": f.get("format", ""),
+                "url": url,
+            })
+        files.sort(key=lambda x: x["name"].lower())
+        return {"files": files, "error": None, "login_required": login_required}
+
+
+class Download:
+    def __init__(self, url, dest_path, filename):
+        self.url = url
+        self.dest_path = dest_path
+        self.filename = filename
+        self.progress = 0.0
+        self.total_bytes = 0
+        self.downloaded_bytes = 0
+        self.speed = 0
+        self.status = "pending"
+        self.error = None
+
+
+class DownloadManager:
+    def __init__(self, history=None):
+        self.queue = []
+        self.current = None
+        self._thread = None
+        self._cancel = False
+        self._lock = threading.Lock()
+        self.history = history
+
+    def add(self, url, dest_path, filename):
+        dl = Download(url, dest_path, filename)
+        with self._lock:
+            self.queue.append(dl)
+        self._start_next()
+        return dl
+
+    def cancel(self, dl):
+        if dl.status == "downloading":
+            self._cancel = True
+        elif dl.status == "pending":
+            dl.status = "cancelled"
+
+    def retry(self, dl):
+        if dl.status in ("error", "cancelled"):
+            dl.status = "pending"
+            dl.progress = 0.0
+            dl.downloaded_bytes = 0
+            dl.speed = 0
+            dl.error = None
+            self._start_next()
+
+    def remove(self, dl):
+        if dl.status == "downloading":
+            self._cancel = True
+        with self._lock:
+            if dl in self.queue:
+                self.queue.remove(dl)
+
+    def remove_completed(self):
+        with self._lock:
+            self.queue = [d for d in self.queue if d.status not in ("done", "error", "cancelled")]
+
+    def get_all(self):
+        with self._lock:
+            return list(self.queue)
+
+    def _start_next(self):
+        if self._thread and self._thread.is_alive():
+            return
+        with self._lock:
+            pending = [d for d in self.queue if d.status == "pending"]
+            if not pending:
+                self.current = None
+                return
+            self.current = pending[0]
+        self._cancel = False
+        self._thread = threading.Thread(target=self._run_worker, daemon=True)
+        self._thread.start()
+
+    def _run_worker(self):
+        self._download_worker()
+        self._start_next()
+
+    def _download_worker(self):
+        dl = self.current
+        dl.status = "downloading"
+        safe_name = dl.filename.replace("\\", "/").split("/")[-1]
+        dl.filename = safe_name
+        os.makedirs(dl.dest_path, exist_ok=True)
+        filepath = os.path.join(dl.dest_path, safe_name)
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            if self._cancel:
+                dl.status = "cancelled"
+                break
+            dl.downloaded_bytes = 0
+            dl.progress = 0.0
+            dl.speed = 0
+            dl.error = None
+            try:
+                headers = {
+                    "User-Agent": ArchiveAPI.USER_AGENT,
+                    "Referer": "https://archive.org/",
+                    "Accept": "*/*",
+                }
+                cookies = get_auth_cookies()
+                if cookies:
+                    headers["Cookie"] = cookies
+                req = urllib.request.Request(dl.url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    dl.total_bytes = int(resp.headers.get("Content-Length", 0))
+                    chunk_size = 64 * 1024
+                    start_time = time.time()
+                    with open(filepath, "wb") as f:
+                        while True:
+                            if self._cancel:
+                                dl.status = "cancelled"
+                                break
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            dl.downloaded_bytes += len(chunk)
+                            if dl.total_bytes > 0:
+                                dl.progress = dl.downloaded_bytes / dl.total_bytes
+                            elapsed = time.time() - start_time
+                            if elapsed > 0:
+                                dl.speed = dl.downloaded_bytes / elapsed
+                if dl.status == "downloading":
+                    dl.progress = 1.0
+                    dl.status = "done"
+                    self._extract_if_archive(dl, filepath)
+                    if self.history:
+                        self.history.add(dl.filename, dl.url, dl.dest_path, dl.total_bytes)
+                break
+            except urllib.error.HTTPError as e:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
+                if e.code == 403:
+                    dl.error = "Login required on archive.org"
+                    dl.status = "error"
+                    break
+                elif e.code == 404:
+                    dl.error = "File not found"
+                    dl.status = "error"
+                    break
+                elif attempt < max_retries - 1:
+                    dl.error = f"Retry {attempt + 2}/{max_retries}..."
+                    time.sleep(2)
+                else:
+                    dl.error = f"HTTP {e.code}: {e.reason}"
+                    dl.status = "error"
+            except Exception as e:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
+                if attempt < max_retries - 1:
+                    dl.error = f"Retry {attempt + 2}/{max_retries}..."
+                    time.sleep(2)
+                else:
+                    dl.error = str(e)
+                    dl.status = "error"
+
+    def _extract_if_archive(self, dl, filepath):
+        if not filepath.lower().endswith(".zip"):
+            return
+        try:
+            dl.status = "extracting"
+            dl.error = None
+            with zipfile.ZipFile(filepath, "r") as zf:
+                zf.extractall(dl.dest_path)
+            os.remove(filepath)
+            dl.status = "done"
+        except zipfile.BadZipFile:
+            dl.status = "done"
+        except Exception as e:
+            dl.error = f"Extract failed: {e}"
+            dl.status = "done"
+
+
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json")
+
+
+class DownloadHistory:
+    def __init__(self):
+        self.entries = []
+        self._load()
+
+    def _load(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, "r") as f:
+                    self.entries = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self.entries = []
+
+    def _save(self):
+        try:
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(self.entries, f, indent=2)
+        except OSError:
+            pass
+
+    def add(self, filename, url, dest_path, size):
+        for e in self.entries:
+            if e["url"] == url:
+                e["filename"] = filename
+                e["dest_path"] = dest_path
+                e["size"] = size
+                self._save()
+                return
+        self.entries.insert(0, {
+            "filename": filename,
+            "url": url,
+            "dest_path": dest_path,
+            "size": size,
+        })
+        if len(self.entries) > 200:
+            self.entries = self.entries[:200]
+        self._save()
+
+    def remove(self, entry):
+        self.entries = [e for e in self.entries if e["url"] != entry["url"]]
+        self._save()
+
+    def clear(self):
+        self.entries = []
+        self._save()
+
+    def get_all(self):
+        return list(self.entries)
+
+    def is_on_disk(self, entry):
+        path = os.path.join(entry["dest_path"], entry["filename"])
+        return os.path.exists(path)
+
+
+class AsyncTask:
+    def __init__(self, func, *args, **kwargs):
+        self.result = None
+        self.error = None
+        self.done = False
+        self._thread = threading.Thread(
+            target=self._run, args=(func, args, kwargs), daemon=True
+        )
+        self._thread.start()
+
+    def _run(self, func, args, kwargs):
+        try:
+            self.result = func(*args, **kwargs)
+        except Exception as e:
+            self.error = str(e)
+        self.done = True

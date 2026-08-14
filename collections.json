@@ -1,0 +1,8 @@
+[
+  {
+    "name": "Example Collection",
+    "identifier": "example-archive-org-identifier",
+    "system": "gba",
+    "description": "Add your own archive.org collection identifiers here"
+  }
+]
