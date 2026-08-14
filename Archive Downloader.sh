@@ -1,6 +1,4 @@
 #!/bin/bash
-# Launch script for Knulli / Batocera
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$SCRIPT_DIR/crash.log"
 

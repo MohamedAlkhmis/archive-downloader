@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import threading
 import time
 import urllib.request
@@ -323,12 +324,44 @@ class DownloadManager:
                     dl.error = str(e)
                     dl.status = "error"
 
+    ARCHIVE_EXTS = (".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".tar.gz", ".tgz")
+
     def _extract_if_archive(self, dl, filepath):
-        if not filepath.lower().endswith(".zip"):
+        lower = filepath.lower()
+        if not any(lower.endswith(ext) for ext in self.ARCHIVE_EXTS):
             return
+        dl.status = "extracting"
+        dl.error = None
+        if self._extract_with_7z(dl, filepath):
+            return
+        if lower.endswith(".zip"):
+            self._extract_with_python(dl, filepath)
+
+    def _extract_with_7z(self, dl, filepath):
+        for cmd in ("7z", "7za", "7zr"):
+            try:
+                result = subprocess.run(
+                    [cmd, "x", "-y", f"-o{dl.dest_path}", filepath],
+                    capture_output=True, timeout=600,
+                )
+                if result.returncode == 0:
+                    os.remove(filepath)
+                    dl.status = "done"
+                    return True
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                dl.error = "Extract timed out"
+                dl.status = "done"
+                return True
+            except Exception as e:
+                dl.error = f"Extract failed: {e}"
+                dl.status = "done"
+                return True
+        return False
+
+    def _extract_with_python(self, dl, filepath):
         try:
-            dl.status = "extracting"
-            dl.error = None
             with zipfile.ZipFile(filepath, "r") as zf:
                 zf.extractall(dl.dest_path)
             os.remove(filepath)

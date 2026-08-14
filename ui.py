@@ -24,6 +24,7 @@ class InputEvent:
     PAGE_UP = "page_up"
     PAGE_DOWN = "page_down"
     START = "start"
+    QUIT = "quit"
 
 
 class InputHandler:
@@ -60,6 +61,16 @@ class InputHandler:
                 elif hx == 1:
                     self._events.append(InputEvent.RIGHT)
             elif event.type == pygame.JOYBUTTONDOWN:
+                if self.joystick and event.button in GAMEPAD_START:
+                    select_held = any(self.joystick.get_button(b) for b in GAMEPAD_SELECT)
+                    if select_held:
+                        self._events.append(InputEvent.QUIT)
+                        continue
+                elif self.joystick and event.button in GAMEPAD_SELECT:
+                    start_held = any(self.joystick.get_button(b) for b in GAMEPAD_START)
+                    if start_held:
+                        self._events.append(InputEvent.QUIT)
+                        continue
                 if event.button in GAMEPAD_CONFIRM:
                     self._events.append(InputEvent.CONFIRM)
                 elif event.button in GAMEPAD_BACK:
@@ -421,7 +432,7 @@ class BrowseSystemScreen(Screen):
     def __init__(self, app):
         super().__init__(app)
         self.list = ListView(item_height=40)
-        self.list.set_items(SYSTEMS)
+        self.list.set_items(get_enabled_systems())
 
     def handle_input(self, events):
         self.list.handle_input(events)
@@ -619,7 +630,8 @@ class FileListScreen(Screen):
                 if f:
                     if self.login_required:
                         self.app.toast("Login required - may fail", COLORS["warning"])
-                    dest = get_rom_path(self.system_dir) if self.system_dir else get_rom_path("downloads")
+                    detected = detect_system_dir(f["name"], self.system_dir)
+                    dest = get_rom_path(detected) if detected else get_rom_path("downloads")
                     self.app.download_manager.add(f["url"], dest, f["name"])
                     self.app.toast("Download started: " + f["name"], COLORS["success"])
             elif event == InputEvent.BACK:
@@ -880,24 +892,36 @@ class DownloadQueueScreen(Screen):
 class SettingsScreen(Screen):
     def __init__(self, app):
         super().__init__(app)
-        self.list = ListView(item_height=44)
+        self.list = ListView(item_height=50)
         self._refresh_items()
 
     def _refresh_items(self):
         from archive_api import load_credentials
         creds = load_credentials()
         if creds:
+            login_icon = "ON"
             login_value = creds.get("email", "Logged in")
-            login_label = "Archive.org Account (logged in)"
-        else:
-            login_value = "Not logged in - tap to login"
             login_label = "Archive.org Account"
+        else:
+            login_icon = "OFF"
+            login_value = "Not logged in"
+            login_label = "Archive.org Account"
+
+        enabled_count = len(get_enabled_systems())
+        total_count = len(ALL_SYSTEMS)
+
+        custom_count = len(get_custom_paths())
+        paths_value = f"{custom_count} custom path{'s' if custom_count != 1 else ''}" if custom_count else "All default"
+
         self.items = [
-            {"label": login_label, "value": login_value, "key": "login"},
-            {"label": "ROM Download Path", "value": ROM_BASE_PATH, "key": "rom_path"},
-            {"label": "Device Mode", "value": "Yes" if IS_DEVICE else "No (PC)", "key": "device"},
-            {"label": "Gamepad Detected", "value": "Yes" if pygame.joystick.get_count() > 0 else "No", "key": "gamepad"},
-            {"label": "Screen Resolution", "value": f"{SCREEN_WIDTH}x{SCREEN_HEIGHT}", "key": "res"},
+            {"label": login_label, "value": login_value, "key": "login", "icon": login_icon,
+             "icon_color": COLORS["success"] if creds else COLORS["text_dim"]},
+            {"label": "Manage Systems", "value": f"{enabled_count} of {total_count} systems enabled", "key": "systems", "icon": "SYS",
+             "icon_color": COLORS["accent"]},
+            {"label": "System Paths", "value": paths_value, "key": "paths", "icon": "DIR",
+             "icon_color": COLORS["warning"] if custom_count else COLORS["text_dim"]},
+            {"label": "Device Info", "value": f"{'Device' if IS_DEVICE else 'PC'} | {'Gamepad' if pygame.joystick.get_count() > 0 else 'Keyboard'} | {SCREEN_WIDTH}x{SCREEN_HEIGHT}", "key": "info", "icon": "INF",
+             "icon_color": COLORS["text_dim"]},
         ]
         self.list.set_items(self.items)
 
@@ -908,24 +932,189 @@ class SettingsScreen(Screen):
                 self.app.pop_screen()
             elif event == InputEvent.CONFIRM:
                 item = self.list.get_selected()
-                if item and item["key"] == "login":
+                if not item:
+                    continue
+                if item["key"] == "login":
                     from archive_api import load_credentials
                     creds = load_credentials()
                     if creds:
                         self.app.push_screen(LogoutConfirmScreen(self.app, self))
                     else:
                         self.app.push_screen(LoginEmailScreen(self.app, self))
+                elif item["key"] == "systems":
+                    self.app.push_screen(ManageSystemsScreen(self.app, self))
+                elif item["key"] == "paths":
+                    self.app.push_screen(SystemPathsScreen(self.app, self))
 
     def draw(self, surface):
         draw_header(surface, "Settings")
 
         def render_item(surf, item, idx, y, selected):
-            draw_text(surf, item["label"], (20, y + 4), COLORS["text_dim"], FONT_SIZE_SMALL)
-            color = COLORS["success"] if "logged in" in item.get("label", "").lower() and item["key"] == "login" else COLORS["text"]
-            draw_text(surf, item["value"], (20, y + 22), color, FONT_SIZE_BODY, bold=selected)
+            icon_bg = item.get("icon_color", COLORS["bg_lighter"])
+            draw_rounded_rect(surf, icon_bg, (16, y + 9, 36, 32), 6)
+            icon = item.get("icon", "?")
+            iw = fonts.get(FONT_SIZE_HINT, bold=True).size(icon)[0]
+            draw_text(surf, icon, (16 + (36 - iw) // 2, y + 16), COLORS["bg"], FONT_SIZE_HINT, bold=True)
+            draw_text(surf, item["label"], (62, y + 6), COLORS["text"], FONT_SIZE_BODY, bold=selected)
+            draw_text(surf, item["value"], (62, y + 28), COLORS["text_dim"], FONT_SIZE_SMALL, max_width=SCREEN_WIDTH - 80)
 
         self.list.draw(surface, render_item)
         draw_footer(surface, [("Select", "A"), ("Back", "B")])
+
+
+class ManageSystemsScreen(Screen):
+    def __init__(self, app, settings_screen):
+        super().__init__(app)
+        self.settings_screen = settings_screen
+        self.list = ListView(item_height=40)
+        enabled = get_enabled_systems()
+        self.enabled_dirs = set(s["dir"] for s in enabled)
+        self.list.set_items(list(ALL_SYSTEMS))
+
+    def handle_input(self, events):
+        self.list.handle_input(events)
+        for event in events:
+            if event == InputEvent.BACK:
+                set_enabled_systems(list(self.enabled_dirs))
+                self.settings_screen._refresh_items()
+                self.app.pop_screen()
+            elif event == InputEvent.CONFIRM:
+                item = self.list.get_selected()
+                if item:
+                    d = item["dir"]
+                    if d in self.enabled_dirs:
+                        self.enabled_dirs.discard(d)
+                    else:
+                        self.enabled_dirs.add(d)
+            elif event == InputEvent.START:
+                if len(self.enabled_dirs) == len(ALL_SYSTEMS):
+                    self.enabled_dirs = set()
+                else:
+                    self.enabled_dirs = set(s["dir"] for s in ALL_SYSTEMS)
+
+    def draw(self, surface):
+        draw_header(surface, "Manage Systems")
+        count = len(self.enabled_dirs)
+        info = f"{count} enabled"
+        draw_text(surface, info, (SCREEN_WIDTH - fonts.get(FONT_SIZE_SMALL).size(info)[0] - 12, CONTENT_Y + 4), COLORS["text_dim"], FONT_SIZE_SMALL)
+
+        enabled_dirs = self.enabled_dirs
+
+        def render_item(surf, item, idx, y, selected):
+            on = item["dir"] in enabled_dirs
+            box_color = COLORS["accent"] if on else COLORS["bg_lighter"]
+            draw_rounded_rect(surf, box_color, (16, y + 8, 24, 24), 4)
+            if on:
+                draw_text(surf, "OK", (18, y + 12), COLORS["bg"], FONT_SIZE_HINT, bold=True)
+            tag_bg = COLORS["bg_lighter"]
+            draw_rounded_rect(surf, tag_bg, (48, y + 8, 36, 24), 4)
+            tw = fonts.get(FONT_SIZE_HINT, bold=True).size(item["tag"])[0]
+            draw_text(surf, item["tag"], (48 + (36 - tw) // 2, y + 12), COLORS["text_dim"], FONT_SIZE_HINT, bold=True)
+            draw_text(surf, item["name"], (92, y + 10), COLORS["text"] if on else COLORS["text_dim"], FONT_SIZE_BODY, bold=selected)
+
+        self.list.draw(surface, render_item)
+        draw_footer(surface, [("Toggle", "A"), ("Back", "B"), ("All/None", "START")])
+
+
+class SystemPathsScreen(Screen):
+    def __init__(self, app, settings_screen):
+        super().__init__(app)
+        self.settings_screen = settings_screen
+        self.list = ListView(item_height=44)
+        self._refresh()
+
+    def _refresh(self):
+        custom = get_custom_paths()
+        items = []
+        for s in ALL_SYSTEMS:
+            is_custom = s["dir"] in custom
+            path = custom[s["dir"]] if is_custom else get_default_rom_path(s["dir"])
+            items.append({
+                "system": s,
+                "path": path,
+                "custom": is_custom,
+            })
+        self.list.set_items(items)
+
+    def handle_input(self, events):
+        self.list.handle_input(events)
+        for event in events:
+            if event == InputEvent.BACK:
+                self.settings_screen._refresh_items()
+                self.app.pop_screen()
+            elif event == InputEvent.CONFIRM:
+                item = self.list.get_selected()
+                if item:
+                    self.app.push_screen(EditPathScreen(self.app, item["system"], self))
+            elif event == InputEvent.START:
+                reset_all_paths()
+                self._refresh()
+                self.app.toast("All paths reset to default", COLORS["success"])
+
+    def draw(self, surface):
+        draw_header(surface, "System Paths")
+
+        def render_item(surf, item, idx, y, selected):
+            s = item["system"]
+            tag_bg = COLORS["warning"] if item["custom"] else COLORS["bg_lighter"]
+            draw_rounded_rect(surf, tag_bg, (14, y + 8, 36, 28), 5)
+            tw = fonts.get(FONT_SIZE_HINT, bold=True).size(s["tag"])[0]
+            draw_text(surf, s["tag"], (14 + (36 - tw) // 2, y + 13),
+                       COLORS["bg"] if item["custom"] else COLORS["text_dim"], FONT_SIZE_HINT, bold=True)
+            draw_text(surf, s["name"], (58, y + 4), COLORS["text"], FONT_SIZE_SMALL, bold=selected)
+            path_color = COLORS["warning"] if item["custom"] else COLORS["text_dim"]
+            draw_text(surf, item["path"], (58, y + 24), path_color, FONT_SIZE_HINT, max_width=SCREEN_WIDTH - 75)
+
+        self.list.draw(surface, render_item)
+        draw_footer(surface, [("Edit", "A"), ("Back", "B"), ("Reset All", "START")])
+
+
+class EditPathScreen(Screen):
+    def __init__(self, app, system, paths_screen):
+        super().__init__(app)
+        self.system = system
+        self.paths_screen = paths_screen
+        self.keyboard = OnScreenKeyboard()
+        custom = get_custom_paths()
+        if system["dir"] in custom:
+            self.keyboard.text = custom[system["dir"]]
+        else:
+            self.keyboard.text = get_default_rom_path(system["dir"])
+        self.selected_action = 0
+
+    def handle_input(self, events):
+        for event in events:
+            if event == InputEvent.BACK:
+                self.app.pop_screen()
+                return
+            if event == InputEvent.START:
+                reset_custom_path(self.system["dir"])
+                self.paths_screen._refresh()
+                self.app.toast(f"Reset {self.system['name']} to default", COLORS["success"])
+                self.app.pop_screen()
+                return
+        self.keyboard.handle_input(events)
+        if self.keyboard.confirmed:
+            path = self.keyboard.text.strip()
+            if path:
+                default = get_default_rom_path(self.system["dir"])
+                if path == default:
+                    reset_custom_path(self.system["dir"])
+                else:
+                    set_custom_path(self.system["dir"], path)
+                self.paths_screen._refresh()
+                self.app.toast(f"Path saved for {self.system['name']}", COLORS["success"])
+                self.app.pop_screen()
+            else:
+                self.app.toast("Path cannot be empty", COLORS["error"])
+            self.keyboard.confirmed = False
+
+    def draw(self, surface):
+        draw_header(surface, f"{self.system['name']} Path")
+        default = get_default_rom_path(self.system["dir"])
+        draw_text(surface, f"Default: {default}", (16, CONTENT_Y + 4), COLORS["text_dim"], FONT_SIZE_HINT)
+        self.keyboard.draw(surface, CONTENT_Y + 22)
+        draw_footer(surface, [("Type", "A"), ("Back", "B"), ("Reset", "START")])
 
 
 class LoginEmailScreen(Screen):
@@ -1098,6 +1287,10 @@ class App:
 
             self.input.update(events)
             input_events = self.input.get_events()
+
+            if InputEvent.QUIT in input_events:
+                self.running = False
+                return
 
             current_screen = self.screen_stack[-1] if self.screen_stack else None
             if current_screen:

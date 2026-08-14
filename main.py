@@ -9,12 +9,15 @@ from config import SCREEN_WIDTH, SCREEN_HEIGHT, IS_DEVICE
 
 def main():
     if IS_DEVICE:
-        os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
     pygame.init()
     pygame.joystick.init()
-    pygame.mouse.set_visible(not IS_DEVICE)
+
+    try:
+        pygame.mouse.set_visible(not IS_DEVICE)
+    except pygame.error:
+        pass
 
     flags = 0
     if IS_DEVICE:

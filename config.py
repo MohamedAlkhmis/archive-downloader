@@ -37,31 +37,44 @@ CONTENT_HEIGHT = SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT
 
 IS_DEVICE = platform.machine().startswith("aarch64") or platform.machine().startswith("arm")
 ROM_BASE_PATH = "/userdata/roms" if IS_DEVICE else os.path.join(os.path.dirname(__file__), "downloads")
-CONFIG_DIR = os.path.dirname(__file__)
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 
-ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
-ARCHIVE_METADATA_URL = "https://archive.org/metadata/{}"
-ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{}/{}"
-
-SYSTEMS = [
-    {"name": "Game Boy Advance", "dir": "gba", "tag": "GBA", "query": "gameboy advance roms"},
-    {"name": "Game Boy Color", "dir": "gbc", "tag": "GBC", "query": "gameboy color roms"},
-    {"name": "Game Boy", "dir": "gb", "tag": "GB", "query": "gameboy roms"},
-    {"name": "Super Nintendo", "dir": "snes", "tag": "SNES", "query": "super nintendo snes roms"},
-    {"name": "NES", "dir": "nes", "tag": "NES", "query": "nintendo nes roms"},
-    {"name": "Sega Genesis", "dir": "megadrive", "tag": "GEN", "query": "sega genesis megadrive roms"},
-    {"name": "Sega Master System", "dir": "mastersystem", "tag": "SMS", "query": "sega master system roms"},
-    {"name": "PlayStation", "dir": "psx", "tag": "PSX", "query": "playstation psx roms"},
-    {"name": "Nintendo 64", "dir": "n64", "tag": "N64", "query": "nintendo 64 roms"},
-    {"name": "Nintendo DS", "dir": "nds", "tag": "NDS", "query": "nintendo ds roms"},
-    {"name": "PC Engine", "dir": "pcengine", "tag": "PCE", "query": "pc engine turbografx roms"},
-    {"name": "Neo Geo Pocket", "dir": "ngp", "tag": "NGP", "query": "neo geo pocket roms"},
-    {"name": "Game Gear", "dir": "gamegear", "tag": "GG", "query": "sega game gear roms"},
-    {"name": "Atari 2600", "dir": "atari2600", "tag": "A26", "query": "atari 2600 roms"},
-    {"name": "Atari 7800", "dir": "atari7800", "tag": "A78", "query": "atari 7800 roms"},
-    {"name": "Wonderswan", "dir": "wonderswan", "tag": "WS", "query": "wonderswan roms"},
-    {"name": "Atari Lynx", "dir": "lynx", "tag": "LNX", "query": "atari lynx roms"},
-    {"name": "Arcade / MAME", "dir": "mame", "tag": "ARC", "query": "mame arcade roms"},
+ALL_SYSTEMS = [
+    {"name": "Game Boy Advance", "dir": "gba", "tag": "GBA", "query": "gameboy advance roms", "default": True},
+    {"name": "Game Boy Color", "dir": "gbc", "tag": "GBC", "query": "gameboy color roms", "default": True},
+    {"name": "Game Boy", "dir": "gb", "tag": "GB", "query": "gameboy roms", "default": True},
+    {"name": "Super Nintendo", "dir": "snes", "tag": "SNES", "query": "super nintendo snes roms", "default": True},
+    {"name": "NES", "dir": "nes", "tag": "NES", "query": "nintendo nes roms", "default": True},
+    {"name": "Nintendo 64", "dir": "n64", "tag": "N64", "query": "nintendo 64 roms", "default": True},
+    {"name": "Nintendo DS", "dir": "nds", "tag": "NDS", "query": "nintendo ds roms", "default": True},
+    {"name": "PlayStation", "dir": "psx", "tag": "PSX", "query": "playstation psx roms", "default": True},
+    {"name": "PlayStation 2", "dir": "ps2", "tag": "PS2", "query": "playstation 2 ps2 isos", "default": False},
+    {"name": "PSP", "dir": "psp", "tag": "PSP", "query": "psp iso roms", "default": False},
+    {"name": "Sega Genesis", "dir": "megadrive", "tag": "GEN", "query": "sega genesis megadrive roms", "default": True},
+    {"name": "Sega Master System", "dir": "mastersystem", "tag": "SMS", "query": "sega master system roms", "default": True},
+    {"name": "Sega CD", "dir": "segacd", "tag": "SCD", "query": "sega cd roms iso", "default": False},
+    {"name": "Sega 32X", "dir": "sega32x", "tag": "32X", "query": "sega 32x roms", "default": False},
+    {"name": "Sega Saturn", "dir": "saturn", "tag": "SAT", "query": "sega saturn roms iso", "default": False},
+    {"name": "Dreamcast", "dir": "dreamcast", "tag": "DC", "query": "dreamcast roms iso", "default": False},
+    {"name": "Game Gear", "dir": "gamegear", "tag": "GG", "query": "sega game gear roms", "default": True},
+    {"name": "PC Engine", "dir": "pcengine", "tag": "PCE", "query": "pc engine turbografx roms", "default": True},
+    {"name": "PC Engine CD", "dir": "pcenginecd", "tag": "PCD", "query": "pc engine cd turbografx cd roms", "default": False},
+    {"name": "Neo Geo", "dir": "neogeo", "tag": "NG", "query": "neo geo roms", "default": False},
+    {"name": "Neo Geo Pocket", "dir": "ngp", "tag": "NGP", "query": "neo geo pocket roms", "default": False},
+    {"name": "Neo Geo CD", "dir": "neogeocd", "tag": "NCD", "query": "neo geo cd roms iso", "default": False},
+    {"name": "Atari 2600", "dir": "atari2600", "tag": "A26", "query": "atari 2600 roms", "default": False},
+    {"name": "Atari 5200", "dir": "atari5200", "tag": "A52", "query": "atari 5200 roms", "default": False},
+    {"name": "Atari 7800", "dir": "atari7800", "tag": "A78", "query": "atari 7800 roms", "default": False},
+    {"name": "Atari Jaguar", "dir": "jaguar", "tag": "JAG", "query": "atari jaguar roms", "default": False},
+    {"name": "Atari Lynx", "dir": "lynx", "tag": "LNX", "query": "atari lynx roms", "default": False},
+    {"name": "Wonderswan", "dir": "wonderswan", "tag": "WS", "query": "wonderswan roms", "default": False},
+    {"name": "ColecoVision", "dir": "coleco", "tag": "COL", "query": "colecovision roms", "default": False},
+    {"name": "Intellivision", "dir": "intellivision", "tag": "INT", "query": "intellivision roms", "default": False},
+    {"name": "Virtual Boy", "dir": "virtualboy", "tag": "VB", "query": "virtual boy roms", "default": False},
+    {"name": "3DO", "dir": "3do", "tag": "3DO", "query": "3do roms iso", "default": False},
+    {"name": "Vectrex", "dir": "vectrex", "tag": "VEC", "query": "vectrex roms", "default": False},
+    {"name": "Arcade / MAME", "dir": "mame", "tag": "ARC", "query": "mame arcade roms", "default": True},
 ]
 
 ROM_EXTENSIONS = {
@@ -74,20 +87,116 @@ ROM_EXTENSIONS = {
     ".a26", ".a78", ".ws", ".wsc", ".lnx",
     ".pbp", ".chd", ".cso", ".img", ".mdf",
     ".col", ".sg", ".32x",
+    ".nrg", ".cdi", ".gdi",
 }
 
-GAMEPAD_CONFIRM = [0, 1]
-GAMEPAD_BACK = [1, 0]
-GAMEPAD_START = [7, 11]
-GAMEPAD_SELECT = [6, 10]
-GAMEPAD_L = [4, 9]
-GAMEPAD_R = [5, 8]
+EXT_TO_SYSTEM = {
+    ".gba": "gba",
+    ".gbc": "gbc",
+    ".gb": "gb", ".sgb": "gb",
+    ".sfc": "snes", ".smc": "snes",
+    ".nes": "nes", ".unf": "nes", ".fds": "nes",
+    ".md": "megadrive", ".smd": "megadrive", ".gen": "megadrive",
+    ".sms": "mastersystem",
+    ".gg": "gamegear",
+    ".pbp": "psx",
+    ".n64": "n64", ".z64": "n64", ".v64": "n64",
+    ".nds": "nds",
+    ".pce": "pcengine",
+    ".ngp": "ngp", ".ngc": "ngp",
+    ".a26": "atari2600",
+    ".a78": "atari7800",
+    ".ws": "wonderswan", ".wsc": "wonderswan",
+    ".lnx": "lynx",
+    ".col": "coleco",
+    ".gdi": "dreamcast",
+    ".vb": "virtualboy",
+}
+
+
+def detect_system_dir(filename, fallback=None):
+    ext = os.path.splitext(filename)[1].lower()
+    return EXT_TO_SYSTEM.get(ext, fallback)
+
+
+GAMEPAD_CONFIRM = [3]
+GAMEPAD_BACK = [4]
+GAMEPAD_START = [10]
+GAMEPAD_SELECT = [9]
+GAMEPAD_L = [7]
+GAMEPAD_R = [8]
+
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
+
+
+def get_enabled_systems():
+    settings = load_settings()
+    enabled = settings.get("enabled_systems", None)
+    if enabled is None:
+        return [s for s in ALL_SYSTEMS if s.get("default")]
+    return [s for s in ALL_SYSTEMS if s["dir"] in enabled]
+
+
+def set_enabled_systems(dirs):
+    settings = load_settings()
+    settings["enabled_systems"] = dirs
+    save_settings(settings)
+
+
+def get_custom_paths():
+    settings = load_settings()
+    return settings.get("custom_paths", {})
+
+
+def set_custom_path(system_dir, path):
+    settings = load_settings()
+    if "custom_paths" not in settings:
+        settings["custom_paths"] = {}
+    settings["custom_paths"][system_dir] = path
+    save_settings(settings)
+
+
+def reset_custom_path(system_dir):
+    settings = load_settings()
+    if "custom_paths" in settings and system_dir in settings["custom_paths"]:
+        del settings["custom_paths"][system_dir]
+        save_settings(settings)
+
+
+def reset_all_paths():
+    settings = load_settings()
+    settings.pop("custom_paths", None)
+    save_settings(settings)
 
 
 def get_rom_path(system_dir):
-    path = os.path.join(ROM_BASE_PATH, system_dir)
+    custom = get_custom_paths()
+    if system_dir in custom:
+        path = custom[system_dir]
+    else:
+        path = os.path.join(ROM_BASE_PATH, system_dir)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def get_default_rom_path(system_dir):
+    return os.path.join(ROM_BASE_PATH, system_dir)
 
 
 def load_custom_collections():
