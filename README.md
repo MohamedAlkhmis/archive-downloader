@@ -41,12 +41,7 @@ A ROM downloader for Anbernic RG35XX H (and similar handhelds) running Knulli/Ba
    /userdata/roms/ports/archive-downloader/
    ```
 
-2. Make the launch script executable:
-   ```bash
-   chmod +x "/userdata/roms/ports/archive-downloader/Archive Downloader.sh"
-   ```
-
-3. Refresh your game list in Knulli — the app appears as **Archive Downloader** under **Ports**.
+2. Refresh your game list in Knulli — the app appears as **Archive Downloader** under **Ports**.
 
 ### On PC (for development)
 
