@@ -152,12 +152,31 @@ def draw_text(surface, text, pos, color=None, size=FONT_SIZE_BODY, bold=False, m
     return rendered.get_rect(topleft=pos)
 
 
+_bg_indicator_state = {"active": False, "blink": 0.0}
+
+
+def set_bg_indicator(active):
+    _bg_indicator_state["active"] = active
+
+
 def draw_header(surface, title, show_back=True):
     pygame.draw.rect(surface, COLORS["header"], (0, 0, SCREEN_WIDTH, HEADER_HEIGHT))
     pygame.draw.line(surface, COLORS["divider"], (0, HEADER_HEIGHT - 1), (SCREEN_WIDTH, HEADER_HEIGHT - 1))
     if show_back:
         draw_text(surface, "<", (12, 10), COLORS["accent"], FONT_SIZE_TITLE, bold=True)
     draw_text(surface, title, (40 if show_back else 16, 11), COLORS["text"], FONT_SIZE_TITLE, bold=True)
+    if _bg_indicator_state["active"]:
+        _draw_bg_icon(surface)
+
+
+def _draw_bg_icon(surface):
+    blink = int(time.time() * 2) % 2 == 0
+    color = COLORS["accent"] if blink else COLORS["success"]
+    x = SCREEN_WIDTH - 38
+    y = 8
+    pygame.draw.polygon(surface, color, [(x + 8, y), (x + 16, y + 12), (x, y + 12)])
+    pygame.draw.rect(surface, color, (x + 4, y + 12, 8, 8))
+    draw_text(surface, "BG", (x - 2, y + 22), COLORS["text_dim"], FONT_SIZE_HINT)
 
 
 def draw_footer(surface, hints):
@@ -736,6 +755,7 @@ class DownloadQueueScreen(Screen):
     def __init__(self, app):
         super().__init__(app)
         self.tab = self.TAB_ACTIVE
+        self._last_bg_refresh = 0
         content_y = CONTENT_Y + self.TAB_HEIGHT
         content_h = CONTENT_HEIGHT - self.TAB_HEIGHT
         self.active_list = ListView(item_height=52, visible_area_y=content_y, visible_area_h=content_h)
@@ -798,6 +818,10 @@ class DownloadQueueScreen(Screen):
 
     def update(self):
         if self.tab == self.TAB_ACTIVE:
+            now = time.time()
+            if now - self._last_bg_refresh >= 3:
+                self._last_bg_refresh = now
+                self.app.download_manager.refresh_bg_status()
             self.active_list.set_items(self.app.download_manager.get_all())
 
     def _draw_tabs(self, surface):
@@ -850,8 +874,12 @@ class DownloadQueueScreen(Screen):
                 if dl.status == "downloading":
                     draw_progress_bar(surf, (20, y + 24, SCREEN_WIDTH - 140, 10), dl.progress)
                     pct = f"{int(dl.progress * 100)}%"
-                    speed = format_size(int(dl.speed)) + "/s" if dl.speed > 0 else ""
-                    info = f"{pct}  {speed}"
+                    if dl.error == "Background download":
+                        size_info = format_size(dl.downloaded_bytes) + "/" + format_size(dl.total_bytes) if dl.total_bytes > 0 else ""
+                        info = f"{pct} BG {size_info}"
+                    else:
+                        speed = format_size(int(dl.speed)) + "/s" if dl.speed > 0 else ""
+                        info = f"{pct}  {speed}"
                     draw_text(surf, info, (SCREEN_WIDTH - 110, y + 20), COLORS["accent"], FONT_SIZE_HINT)
                 elif dl.status == "extracting":
                     draw_progress_bar(surf, (20, y + 24, SCREEN_WIDTH - 140, 10), 1.0, COLORS["warning"])
@@ -942,9 +970,13 @@ class SettingsScreen(Screen):
         custom_count = len(get_custom_paths())
         paths_value = f"{custom_count} custom path{'s' if custom_count != 1 else ''}" if custom_count else "All default"
 
+        bg_on = get_bg_download_enabled()
+
         self.items = [
             {"label": login_label, "value": login_value, "key": "login", "icon": login_icon,
              "icon_color": COLORS["success"] if creds else COLORS["text_dim"]},
+            {"label": "Background Downloads", "value": "ON - Downloads continue after exit" if bg_on else "OFF - Downloads stop on exit", "key": "bg_download", "icon": "BG",
+             "icon_color": COLORS["success"] if bg_on else COLORS["text_dim"]},
             {"label": "Manage Systems", "value": f"{enabled_count} of {total_count} systems enabled", "key": "systems", "icon": "SYS",
              "icon_color": COLORS["accent"]},
             {"label": "System Paths", "value": paths_value, "key": "paths", "icon": "DIR",
@@ -970,6 +1002,11 @@ class SettingsScreen(Screen):
                         self.app.push_screen(LogoutConfirmScreen(self.app, self))
                     else:
                         self.app.push_screen(LoginEmailScreen(self.app, self))
+                elif item["key"] == "bg_download":
+                    cur = get_bg_download_enabled()
+                    set_bg_download_enabled(not cur)
+                    self._refresh_items()
+                    self.app.toast("Background downloads " + ("OFF" if cur else "ON"), COLORS["accent"])
                 elif item["key"] == "systems":
                     self.app.push_screen(ManageSystemsScreen(self.app, self))
                 elif item["key"] == "paths":
@@ -1286,6 +1323,7 @@ class App:
         from archive_api import DownloadManager, DownloadHistory
         self.history = DownloadHistory()
         self.download_manager = DownloadManager(history=self.history)
+        self._last_bg_check = 0
 
         init_fonts()
         self.push_screen(MainMenuScreen(self))
@@ -1325,6 +1363,11 @@ class App:
             if current_screen:
                 current_screen.handle_input(input_events)
                 current_screen.update()
+
+            now = time.time()
+            if now - self._last_bg_check >= 5:
+                self._last_bg_check = now
+                set_bg_indicator(self.download_manager.is_bg_running())
 
             self.surface.fill(COLORS["bg"])
             if current_screen:

@@ -5,3 +5,5 @@ credentials.json
 history.json
 settings.json
 crash.log
+queue.json
+bg.pid

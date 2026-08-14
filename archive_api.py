@@ -162,6 +162,10 @@ class ArchiveAPI:
         return {"files": files, "error": None, "login_required": login_required}
 
 
+QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue.json")
+BG_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bg.pid")
+
+
 class Download:
     def __init__(self, url, dest_path, filename):
         self.url = url
@@ -173,6 +177,28 @@ class Download:
         self.speed = 0
         self.status = "pending"
         self.error = None
+
+    def to_dict(self):
+        return {
+            "url": self.url,
+            "dest_path": self.dest_path,
+            "filename": self.filename,
+            "status": self.status,
+            "error": self.error,
+            "total_bytes": self.total_bytes,
+            "downloaded_bytes": self.downloaded_bytes,
+        }
+
+    @staticmethod
+    def from_dict(d):
+        dl = Download(d["url"], d["dest_path"], d["filename"])
+        dl.status = d.get("status", "pending")
+        dl.error = d.get("error")
+        dl.total_bytes = d.get("total_bytes", 0)
+        dl.downloaded_bytes = d.get("downloaded_bytes", 0)
+        if dl.status == "downloading":
+            dl.status = "pending"
+        return dl
 
 
 class DownloadManager:
@@ -220,6 +246,157 @@ class DownloadManager:
     def get_all(self):
         with self._lock:
             return list(self.queue)
+
+    def save_queue(self):
+        with self._lock:
+            data = [dl.to_dict() for dl in self.queue if dl.status in ("pending", "downloading")]
+        try:
+            with open(QUEUE_FILE, "w") as f:
+                json.dump(data, f, indent=2)
+        except OSError:
+            pass
+
+    def is_bg_running(self):
+        if not os.path.exists(BG_PID_FILE):
+            return False
+        try:
+            with open(BG_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            try:
+                os.remove(BG_PID_FILE)
+            except OSError:
+                pass
+            return False
+
+    def load_queue(self):
+        if not os.path.exists(QUEUE_FILE):
+            return
+        bg_running = self.is_bg_running()
+        try:
+            with open(QUEUE_FILE, "r") as f:
+                data = json.load(f)
+            for d in data:
+                dl = Download.from_dict(d)
+                filepath = os.path.join(dl.dest_path, dl.filename)
+                if dl.status == "done":
+                    pass
+                elif dl.status == "error":
+                    pass
+                elif os.path.exists(filepath):
+                    dl.status = "done"
+                    dl.error = "Downloaded in background"
+                elif bg_running:
+                    dl.status = "downloading"
+                    dl.error = "Background download"
+                else:
+                    dl.status = "pending"
+                    dl.error = None
+                with self._lock:
+                    exists = any(q.url == dl.url for q in self.queue)
+                    if not exists:
+                        self.queue.append(dl)
+            if not bg_running:
+                try:
+                    os.remove(QUEUE_FILE)
+                except OSError:
+                    pass
+                self._start_next()
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+    def refresh_bg_status(self):
+        if not self.is_bg_running():
+            with self._lock:
+                for dl in self.queue:
+                    if dl.error == "Background download":
+                        filepath = os.path.join(dl.dest_path, dl.filename)
+                        if os.path.exists(filepath):
+                            dl.status = "done"
+                            dl.error = "Downloaded in background"
+                        else:
+                            dl.status = "pending"
+                            dl.error = None
+            if os.path.exists(QUEUE_FILE):
+                self.load_queue()
+            return False
+        if os.path.exists(QUEUE_FILE):
+            try:
+                with open(QUEUE_FILE, "r") as f:
+                    data = json.load(f)
+                status_map = {d["url"]: d for d in data}
+                with self._lock:
+                    for dl in self.queue:
+                        if dl.url in status_map:
+                            info = status_map[dl.url]
+                            filepath = os.path.join(dl.dest_path, dl.filename)
+                            if info["status"] == "done" or os.path.exists(filepath):
+                                dl.status = "done"
+                                dl.error = "Downloaded in background"
+                            elif info["status"] == "error":
+                                dl.status = "error"
+                                dl.error = info.get("error", "Failed in background")
+                            elif info["status"] == "downloading":
+                                dl.status = "downloading"
+                                dl.error = "Background download"
+                                dl.downloaded_bytes = info.get("downloaded_bytes", 0)
+                                dl.total_bytes = info.get("total_bytes", 0)
+                                if dl.total_bytes > 0:
+                                    dl.progress = dl.downloaded_bytes / dl.total_bytes
+            except (json.JSONDecodeError, OSError):
+                pass
+        return True
+
+    def has_active(self):
+        with self._lock:
+            return any(d.status in ("pending", "downloading") and d.error != "Background download" for d in self.queue)
+
+    def spawn_background(self):
+        if self.is_bg_running():
+            self.save_queue()
+            return
+        self.save_queue()
+        has_pending = False
+        with self._lock:
+            has_pending = any(d.status in ("pending",) for d in self.queue)
+        if not has_pending:
+            return
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(app_dir, "bg_download.py")
+        log = os.path.join(app_dir, "bg.log")
+        if not os.path.exists(script):
+            return
+        try:
+            log_fd = open(log, "a")
+            subprocess.Popen(
+                ["nohup", "python3", script],
+                stdout=log_fd,
+                stderr=log_fd,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=app_dir,
+                close_fds=True,
+            )
+            log_fd.close()
+        except Exception:
+            pass
+
+    def stop_background(self):
+        if not os.path.exists(BG_PID_FILE):
+            return
+        try:
+            with open(BG_PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 15)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                os.remove(BG_PID_FILE)
+            except OSError:
+                pass
 
     def _start_next(self):
         with self._lock:

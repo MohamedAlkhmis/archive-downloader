@@ -12,13 +12,17 @@ A ROM downloader for Anbernic RG35XX H (and similar handhelds) running Knulli/Ba
 - Enable/disable systems from settings — only show what you need
 - Free-text search across all of archive.org
 - Paginated results with load-more
-- Threaded downloads with progress bar and speed display
+- Multi-connection downloads (4 parallel segments) with progress bar and speed display
+- Background downloads — keep downloading after exiting the app, play games while waiting
+- Background download indicator in the app header (blinking BG icon)
+- Toggle background downloads on/off from Settings
 - Auto-extracts archives after download (ZIP, 7z, RAR, TAR, GZ)
 - Smart file routing — downloads go to the correct system folder based on file extension
 - Per-system custom download paths
 - Archive.org login support for restricted collections
 - Download history with redownload support
-- On-screen keyboard with letters and symbols
+- On-screen keyboard with lowercase, uppercase, and symbols pages
+- Quick-insert buttons (.com, @gmail.com) on the keyboard
 - Gamepad and keyboard input
 - SELECT+START to quit
 
@@ -67,6 +71,7 @@ ROMs download to a `downloads/` subfolder when running on PC.
 ## Settings
 
 - **Archive.org Account** — Log in to access restricted collections
+- **Background Downloads** — Toggle on/off; when on, downloads continue after exiting the app
 - **Manage Systems** — Toggle which systems appear in Browse (A to toggle, START for all/none)
 - **System Paths** — Set custom download paths per system (START to reset)
 
@@ -77,17 +82,21 @@ archive-downloader/
 ├── main.py                  # Entry point
 ├── config.py                # Screen, colors, system definitions, paths
 ├── archive_api.py           # Archive.org API, downloads, auth, history
+├── bg_download.py           # Background download process
 ├── ui.py                    # All GUI screens and components
 ├── Archive Downloader.sh    # Knulli/Batocera launcher
 ├── Archive Downloader.png   # App icon for Knulli
+├── gamelist.xml             # EmulationStation metadata for app icon
 ├── collections.json         # Custom collection config
 └── requirements.txt         # Python dependencies
 ```
 
 **Auto-generated files** (not included in repo):
-- `settings.json` — Enabled systems and custom paths
+- `settings.json` — Enabled systems, custom paths, background download toggle
 - `credentials.json` — Archive.org login cookies
 - `history.json` — Download history
+- `queue.json` — Active download queue (shared between app and background process)
+- `bg.pid` — Background download process ID
 
 ## Archive.org Login
 

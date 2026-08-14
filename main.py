@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pygame
-from config import SCREEN_WIDTH, SCREEN_HEIGHT, IS_DEVICE
+from config import SCREEN_WIDTH, SCREEN_HEIGHT, IS_DEVICE, get_bg_download_enabled
 
 
 def main():
@@ -28,7 +28,11 @@ def main():
 
     from ui import App
     app = App(screen)
+    app.download_manager.load_queue()
     app.run()
+
+    if app.download_manager.has_active() and get_bg_download_enabled():
+        app.download_manager.spawn_background()
 
     pygame.quit()
 

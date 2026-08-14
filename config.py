@@ -185,6 +185,17 @@ def reset_all_paths():
     save_settings(settings)
 
 
+def get_bg_download_enabled():
+    settings = load_settings()
+    return settings.get("bg_download", True)
+
+
+def set_bg_download_enabled(enabled):
+    settings = load_settings()
+    settings["bg_download"] = enabled
+    save_settings(settings)
+
+
 def get_rom_path(system_dir):
     custom = get_custom_paths()
     if system_dir in custom:
