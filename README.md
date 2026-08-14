@@ -111,6 +111,10 @@ Completed downloads are saved to `history.json`. Open **Downloads** and press **
 
 Downloads are automatically placed in the correct system folder based on file extension. For example, a `.gba` file always goes to the GBA folder regardless of which system you browsed from. Ambiguous formats (`.bin`, `.iso`, `.chd`) use the browsed system as the destination.
 
+## Disclaimer
+
+This application is a general-purpose client for browsing and downloading publicly available files from archive.org. It does not host, distribute, or bundle any copyrighted content. Users are solely responsible for ensuring their use of downloaded content complies with applicable copyright laws in their jurisdiction. This tool is intended for use with legally obtained backups and public domain content only.
+
 ## License
 
 MIT
