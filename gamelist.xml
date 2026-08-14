@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <gameList>
   <game>
-    <path>./Archive Downloader.sh</path>
+    <path>./archive-downloader/Archive Downloader.sh</path>
     <name>Archive Downloader</name>
     <image>./images/Archive Downloader.png</image>
     <desc>Browse and download ROMs from archive.org</desc>
