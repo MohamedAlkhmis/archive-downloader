@@ -3,3 +3,5 @@ __pycache__/
 downloads/
 credentials.json
 history.json
+settings.json
+crash.log

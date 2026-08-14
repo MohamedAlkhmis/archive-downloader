@@ -8,19 +8,25 @@ A ROM downloader for Anbernic RG35XX H (and similar handhelds) running Knulli/Ba
 
 ## Features
 
-- Browse ROMs by system (18 consoles: GBA, SNES, PS1, Genesis, and more)
+- Browse ROMs by system (34 systems from Game Boy to PS2)
+- Enable/disable systems from settings — only show what you need
 - Free-text search across all of archive.org
 - Paginated results with load-more
 - Threaded downloads with progress bar and speed display
-- Auto-extracts ZIP files after download
+- Auto-extracts archives after download (ZIP, 7z, RAR, TAR, GZ)
+- Smart file routing — downloads go to the correct system folder based on file extension
+- Per-system custom download paths
 - Archive.org login support for restricted collections
 - Download history with redownload support
 - On-screen keyboard with letters and symbols
 - Gamepad and keyboard input
+- SELECT+START to quit
 
 ## Supported Systems
 
-GBA, GBC, Game Boy, NES, SNES, Genesis, Game Gear, Master System, Neo Geo Pocket, Atari 2600, Atari 7800, PS1, N64, Nintendo DS, TurboGrafx-16, Wonderswan, ColecoVision, Intellivision
+**Enabled by default:** GBA, GBC, Game Boy, SNES, NES, N64, NDS, PlayStation, Genesis, Master System, Game Gear, PC Engine, Arcade/MAME
+
+**Available in settings:** PS2, PSP, Dreamcast, Saturn, Sega CD, Sega 32X, PC Engine CD, Neo Geo, Neo Geo Pocket, Neo Geo CD, Atari 2600, Atari 5200, Atari 7800, Atari Jaguar, Atari Lynx, Wonderswan, ColecoVision, Intellivision, Virtual Boy, 3DO, Vectrex
 
 ## Installation
 
@@ -33,10 +39,10 @@ GBA, GBC, Game Boy, NES, SNES, Genesis, Game Gear, Master System, Neo Geo Pocket
 
 2. Make the launch script executable:
    ```bash
-   chmod +x /userdata/roms/ports/archive-downloader/launch.sh
+   chmod +x "/userdata/roms/ports/archive-downloader/Archive Downloader.sh"
    ```
 
-3. Refresh your game list in Knulli — the app appears under **Ports**.
+3. Refresh your game list in Knulli — the app appears as **Archive Downloader** under **Ports**.
 
 ### On PC (for development)
 
@@ -54,21 +60,34 @@ ROMs download to a `downloads/` subfolder when running on PC.
 | Navigate | D-Pad | Arrow Keys |
 | Select / Confirm | A | Enter / Space |
 | Back | B | Escape / Backspace |
-| Switch Tab / Page | L / R | Page Up / Page Down |
-| Clear / Menu | Start | Tab |
+| Switch Tab / Page | L1 / R1 | Page Up / Page Down |
+| Menu Action | Start | Tab |
+| Quit App | Select + Start | — |
+
+## Settings
+
+- **Archive.org Account** — Log in to access restricted collections
+- **Manage Systems** — Toggle which systems appear in Browse (A to toggle, START for all/none)
+- **System Paths** — Set custom download paths per system (START to reset)
 
 ## File Structure
 
 ```
 archive-downloader/
-├── main.py            # Entry point
-├── config.py          # Screen, colors, system definitions, paths
-├── archive_api.py     # Archive.org API, downloads, auth, history
-├── ui.py              # All GUI screens and components
-├── launch.sh          # Knulli/Batocera launcher
-├── collections.json   # Custom collection config
-└── requirements.txt   # Python dependencies
+├── main.py                  # Entry point
+├── config.py                # Screen, colors, system definitions, paths
+├── archive_api.py           # Archive.org API, downloads, auth, history
+├── ui.py                    # All GUI screens and components
+├── Archive Downloader.sh    # Knulli/Batocera launcher
+├── Archive Downloader.png   # App icon for Knulli
+├── collections.json         # Custom collection config
+└── requirements.txt         # Python dependencies
 ```
+
+**Auto-generated files** (not included in repo):
+- `settings.json` — Enabled systems and custom paths
+- `credentials.json` — Archive.org login cookies
+- `history.json` — Download history
 
 ## Archive.org Login
 
@@ -83,6 +102,10 @@ Credentials are stored locally in `credentials.json`.
 ## Download History
 
 Completed downloads are saved to `history.json`. Open **Downloads** and press **R** to switch to the **History** tab. Items show whether the file is still on the device — press **A** to redownload missing files.
+
+## Smart File Routing
+
+Downloads are automatically placed in the correct system folder based on file extension. For example, a `.gba` file always goes to the GBA folder regardless of which system you browsed from. Ambiguous formats (`.bin`, `.iso`, `.chd`) use the browsed system as the destination.
 
 ## License
 
