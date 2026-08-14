@@ -222,9 +222,9 @@ class DownloadManager:
             return list(self.queue)
 
     def _start_next(self):
-        if self._thread and self._thread.is_alive():
-            return
         with self._lock:
+            if self._thread and self._thread.is_alive() and self._thread != threading.current_thread():
+                return
             pending = [d for d in self.queue if d.status == "pending"]
             if not pending:
                 self.current = None
@@ -237,6 +237,45 @@ class DownloadManager:
     def _run_worker(self):
         self._download_worker()
         self._start_next()
+
+    SEGMENTS = 4
+    CHUNK_SIZE = 256 * 1024
+    MIN_SEGMENT_SIZE = 512 * 1024
+
+    def _make_headers(self):
+        headers = {
+            "User-Agent": ArchiveAPI.USER_AGENT,
+            "Referer": "https://archive.org/",
+            "Accept": "*/*",
+        }
+        cookies = get_auth_cookies()
+        if cookies:
+            headers["Cookie"] = cookies
+        return headers
+
+    def _get_file_info(self, url):
+        headers = self._make_headers()
+        req = urllib.request.Request(url, method="HEAD", headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            size = int(resp.headers.get("Content-Length", 0))
+            accept_ranges = resp.headers.get("Accept-Ranges", "")
+            return size, "bytes" in accept_ranges.lower()
+
+    def _download_segment(self, url, start, end, part_path, dl, seg_progress, seg_idx):
+        headers = self._make_headers()
+        headers["Range"] = f"bytes={start}-{end}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            with open(part_path, "wb") as f:
+                while True:
+                    if self._cancel:
+                        return False
+                    chunk = resp.read(self.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    seg_progress[seg_idx] += len(chunk)
+        return True
 
     def _download_worker(self):
         dl = self.current
@@ -256,34 +295,15 @@ class DownloadManager:
             dl.speed = 0
             dl.error = None
             try:
-                headers = {
-                    "User-Agent": ArchiveAPI.USER_AGENT,
-                    "Referer": "https://archive.org/",
-                    "Accept": "*/*",
-                }
-                cookies = get_auth_cookies()
-                if cookies:
-                    headers["Cookie"] = cookies
-                req = urllib.request.Request(dl.url, headers=headers)
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    dl.total_bytes = int(resp.headers.get("Content-Length", 0))
-                    chunk_size = 64 * 1024
-                    start_time = time.time()
-                    with open(filepath, "wb") as f:
-                        while True:
-                            if self._cancel:
-                                dl.status = "cancelled"
-                                break
-                            chunk = resp.read(chunk_size)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            dl.downloaded_bytes += len(chunk)
-                            if dl.total_bytes > 0:
-                                dl.progress = dl.downloaded_bytes / dl.total_bytes
-                            elapsed = time.time() - start_time
-                            if elapsed > 0:
-                                dl.speed = dl.downloaded_bytes / elapsed
+                file_size, supports_range = self._get_file_info(dl.url)
+                dl.total_bytes = file_size
+
+                use_multi = supports_range and file_size >= self.MIN_SEGMENT_SIZE * 2
+                if use_multi:
+                    self._download_multi(dl, filepath, file_size)
+                else:
+                    self._download_single(dl, filepath)
+
                 if dl.status == "downloading":
                     dl.progress = 1.0
                     dl.status = "done"
@@ -292,11 +312,7 @@ class DownloadManager:
                         self.history.add(dl.filename, dl.url, dl.dest_path, dl.total_bytes)
                 break
             except urllib.error.HTTPError as e:
-                if os.path.exists(filepath):
-                    try:
-                        os.remove(filepath)
-                    except OSError:
-                        pass
+                self._cleanup_file(filepath)
                 if e.code == 403:
                     dl.error = "Login required on archive.org"
                     dl.status = "error"
@@ -312,17 +328,107 @@ class DownloadManager:
                     dl.error = f"HTTP {e.code}: {e.reason}"
                     dl.status = "error"
             except Exception as e:
-                if os.path.exists(filepath):
-                    try:
-                        os.remove(filepath)
-                    except OSError:
-                        pass
+                self._cleanup_file(filepath)
                 if attempt < max_retries - 1:
                     dl.error = f"Retry {attempt + 2}/{max_retries}..."
                     time.sleep(2)
                 else:
                     dl.error = str(e)
                     dl.status = "error"
+
+    def _cleanup_file(self, filepath):
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+
+    def _download_single(self, dl, filepath):
+        headers = self._make_headers()
+        req = urllib.request.Request(dl.url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            dl.total_bytes = int(resp.headers.get("Content-Length", 0))
+            start_time = time.time()
+            with open(filepath, "wb") as f:
+                while True:
+                    if self._cancel:
+                        dl.status = "cancelled"
+                        return
+                    chunk = resp.read(self.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    dl.downloaded_bytes += len(chunk)
+                    if dl.total_bytes > 0:
+                        dl.progress = dl.downloaded_bytes / dl.total_bytes
+                    elapsed = time.time() - start_time
+                    if elapsed > 0:
+                        dl.speed = dl.downloaded_bytes / elapsed
+
+    def _download_multi(self, dl, filepath, file_size):
+        seg_count = min(self.SEGMENTS, max(1, file_size // self.MIN_SEGMENT_SIZE))
+        seg_size = file_size // seg_count
+        segments = []
+        for i in range(seg_count):
+            start = i * seg_size
+            end = file_size - 1 if i == seg_count - 1 else (i + 1) * seg_size - 1
+            part_path = filepath + f".part{i}"
+            segments.append((start, end, part_path))
+
+        seg_progress = [0] * seg_count
+        errors = [None] * seg_count
+        start_time = time.time()
+
+        def run_seg(idx, start, end, part_path):
+            try:
+                self._download_segment(dl.url, start, end, part_path, dl, seg_progress, idx)
+            except Exception as e:
+                errors[idx] = e
+
+        threads = []
+        for i, (start, end, part_path) in enumerate(segments):
+            t = threading.Thread(target=run_seg, args=(i, start, end, part_path), daemon=True)
+            threads.append(t)
+            t.start()
+
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.2)
+            dl.downloaded_bytes = sum(seg_progress)
+            if file_size > 0:
+                dl.progress = dl.downloaded_bytes / file_size
+            elapsed = time.time() - start_time
+            if elapsed > 0:
+                dl.speed = dl.downloaded_bytes / elapsed
+            if self._cancel:
+                break
+
+        for t in threads:
+            t.join(timeout=2)
+
+        if self._cancel:
+            dl.status = "cancelled"
+            for _, _, part_path in segments:
+                self._cleanup_file(part_path)
+            return
+
+        for e in errors:
+            if e is not None:
+                for _, _, part_path in segments:
+                    self._cleanup_file(part_path)
+                raise e
+
+        with open(filepath, "wb") as out:
+            for _, _, part_path in segments:
+                with open(part_path, "rb") as part:
+                    while True:
+                        chunk = part.read(self.CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                os.remove(part_path)
+
+        dl.downloaded_bytes = file_size
+        dl.progress = 1.0
 
     ARCHIVE_EXTS = (".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".tar.gz", ".tgz")
 

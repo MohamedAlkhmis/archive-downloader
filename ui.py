@@ -267,19 +267,28 @@ class ListView:
 OSK_PAGES = [
     [
         list("1234567890"),
+        list("qwertyuiop"),
+        list("asdfghjkl_"),
+        list("zxcvbnm.:-"),
+        ["SPC", "DEL", "CAP", "#+=", "OK"],
+    ],
+    [
+        list("1234567890"),
         list("QWERTYUIOP"),
         list("ASDFGHJKL_"),
         list("ZXCVBNM.:-"),
-        ["SPC", "DEL", "#+=", "OK"],
+        ["SPC", "DEL", "cap", "#+=", "OK"],
     ],
     [
         list("@#$%&*+-=^"),
         list("(){}[]<>|/"),
         list('!?~`"' + "';,\\"),
         list("._:-@#$%&*"),
-        ["SPC", "DEL", "ABC", "OK"],
+        ["DEL", "ABC", ".com", "@gmail.com", "OK"],
     ],
-]  # clean up row 4
+]
+
+OSK_QUICK_KEYS = {"@gmail.com", ".com"}
 
 
 class OnScreenKeyboard:
@@ -316,11 +325,22 @@ class OnScreenKeyboard:
                     self.text = self.text[:-1]
                 elif key == "OK":
                     self.confirmed = True
-                elif key in ("#+=", "ABC"):
-                    self.page = 1 - self.page
+                elif key == "CAP":
+                    self.page = 1
                     self.cursor_col = min(self.cursor_col, len(self.rows[self.cursor_row]) - 1)
+                elif key == "cap":
+                    self.page = 0
+                    self.cursor_col = min(self.cursor_col, len(self.rows[self.cursor_row]) - 1)
+                elif key == "#+=":
+                    self.page = 2
+                    self.cursor_col = min(self.cursor_col, len(self.rows[self.cursor_row]) - 1)
+                elif key == "ABC":
+                    self.page = 0
+                    self.cursor_col = min(self.cursor_col, len(self.rows[self.cursor_row]) - 1)
+                elif key in OSK_QUICK_KEYS:
+                    self.text += key
                 else:
-                    self.text += key.lower() if key.isalpha() else key
+                    self.text += key
 
     def draw(self, surface, y_offset):
         text_box_y = y_offset
@@ -337,9 +357,12 @@ class OnScreenKeyboard:
         key_h = 34
         gap = 4
 
+        bottom_wide = {"SPC": 100, "DEL": 60, "CAP": 60, "cap": 60, "#+=": 60, "ABC": 60, ".com": 70, "OK": 60,
+                        "@gmail.com": 110}
+
         for ri, row in enumerate(self.rows):
             if ri == len(self.rows) - 1:
-                total_w = sum(120 if k == "SPC" else 80 for k in row) + gap * (len(row) - 1)
+                total_w = sum(bottom_wide.get(k, key_w) for k in row) + gap * (len(row) - 1)
             else:
                 total_w = len(row) * (key_w + gap) - gap
             start_x = (SCREEN_WIDTH - total_w) // 2
@@ -348,16 +371,22 @@ class OnScreenKeyboard:
 
             for ci, key in enumerate(row):
                 if ri == len(self.rows) - 1:
-                    w = 120 if key == "SPC" else 80
+                    w = bottom_wide.get(key, key_w)
                 else:
                     w = key_w
                 is_sel = ri == self.cursor_row and ci == self.cursor_col
-                bg = COLORS["accent"] if is_sel else COLORS["bg_light"]
+                if key in ("CAP", "cap"):
+                    bg = COLORS["warning"] if is_sel else COLORS["bg_lighter"]
+                elif key in OSK_QUICK_KEYS:
+                    bg = COLORS["accent_dark"] if is_sel else COLORS["bg_lighter"]
+                else:
+                    bg = COLORS["accent"] if is_sel else COLORS["bg_light"]
                 text_color = COLORS["bg"] if is_sel else COLORS["text"]
                 draw_rounded_rect(surface, bg, (kx, ky, w, key_h), 5)
-                label_font = fonts.get(FONT_SIZE_SMALL, bold=is_sel)
+                font_size = FONT_SIZE_HINT if len(key) > 3 else FONT_SIZE_SMALL
+                label_font = fonts.get(font_size, bold=is_sel)
                 lw, lh = label_font.size(key)
-                draw_text(surface, key, (kx + (w - lw) // 2, ky + (key_h - lh) // 2), text_color, FONT_SIZE_SMALL, bold=is_sel)
+                draw_text(surface, key, (kx + (w - lw) // 2, ky + (key_h - lh) // 2), text_color, font_size, bold=is_sel)
                 kx += w + gap
 
     def get_height(self):
