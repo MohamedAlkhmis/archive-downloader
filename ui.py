@@ -24,6 +24,7 @@ class InputEvent:
     PAGE_UP = "page_up"
     PAGE_DOWN = "page_down"
     START = "start"
+    SELECT = "select"
     QUIT = "quit"
 
 
@@ -81,6 +82,8 @@ class InputHandler:
                     self._events.append(InputEvent.PAGE_DOWN)
                 elif event.button in GAMEPAD_START:
                     self._events.append(InputEvent.START)
+                elif event.button in GAMEPAD_SELECT:
+                    self._events.append(InputEvent.SELECT)
 
         for key, (start_time, repeating) in list(self._held_keys.items()):
             action = self._key_to_action(key)
@@ -170,8 +173,7 @@ def draw_header(surface, title, show_back=True):
 
 
 def _draw_bg_icon(surface):
-    blink = int(time.time() * 2) % 2 == 0
-    color = COLORS["accent"] if blink else COLORS["success"]
+    color = COLORS["accent"]
     x = SCREEN_WIDTH - 38
     y = 8
     pygame.draw.polygon(surface, color, [(x + 8, y), (x + 16, y + 12), (x, y + 12)])
@@ -680,6 +682,11 @@ class FileListScreen(Screen):
                         self.app.toast("Login required - may fail", COLORS["warning"])
                     detected = detect_system_dir(f["name"], self.system_dir)
                     dest = get_rom_path(detected) if detected else get_rom_path("downloads")
+                    if f["size"] > 0:
+                        ok, free = self.app.download_manager.check_disk_space(dest, f["size"])
+                        if not ok:
+                            self.app.toast(f"Not enough space! Need {format_size(f['size'])}, have {format_size(free)}", COLORS["error"])
+                            continue
                     self.app.download_manager.add(f["url"], dest, f["name"])
                     self.app.toast("Download started: " + f["name"], COLORS["success"])
             elif event == InputEvent.BACK:
@@ -758,7 +765,7 @@ class DownloadQueueScreen(Screen):
         self._last_bg_refresh = 0
         content_y = CONTENT_Y + self.TAB_HEIGHT
         content_h = CONTENT_HEIGHT - self.TAB_HEIGHT
-        self.active_list = ListView(item_height=52, visible_area_y=content_y, visible_area_h=content_h)
+        self.active_list = ListView(item_height=62, visible_area_y=content_y, visible_area_h=content_h)
         self.history_list = ListView(item_height=44, visible_area_y=content_y, visible_area_h=content_h)
 
     def handle_input(self, events):
@@ -797,6 +804,10 @@ class DownloadQueueScreen(Screen):
                     self.app.toast("Retrying...", COLORS["accent"])
             elif event == InputEvent.START:
                 self.app.download_manager.remove_completed()
+            elif event == InputEvent.SELECT:
+                count = self.app.download_manager.retry_all_failed()
+                if count:
+                    self.app.toast(f"Retrying {count} failed download{'s' if count != 1 else ''}", COLORS["accent"])
 
     def _handle_history(self, events):
         self.history_list.handle_input(events)
@@ -849,6 +860,13 @@ class DownloadQueueScreen(Screen):
         else:
             self._draw_history(surface)
 
+    def _get_queue_stats(self, downloads):
+        pending = sum(1 for d in downloads if d.status in ("pending", "downloading"))
+        total_size = sum(d.total_bytes for d in downloads if d.status in ("pending", "downloading") and d.total_bytes > 0)
+        total_done = sum(d.downloaded_bytes for d in downloads if d.status in ("pending", "downloading"))
+        errors = sum(1 for d in downloads if d.status == "error")
+        return pending, total_size, total_done, errors
+
     def _draw_active(self, surface):
         downloads = self.active_list.items
         if not downloads:
@@ -872,28 +890,37 @@ class DownloadQueueScreen(Screen):
                 status_color = status_colors.get(dl.status, COLORS["text_dim"])
 
                 if dl.status == "downloading":
-                    draw_progress_bar(surf, (20, y + 24, SCREEN_WIDTH - 140, 10), dl.progress)
+                    draw_progress_bar(surf, (20, y + 22, SCREEN_WIDTH - 40, 10), dl.progress)
                     pct = f"{int(dl.progress * 100)}%"
                     if dl.error == "Background download":
                         size_info = format_size(dl.downloaded_bytes) + "/" + format_size(dl.total_bytes) if dl.total_bytes > 0 else ""
-                        info = f"{pct} BG {size_info}"
+                        info = f"{pct}  BG  {size_info}"
                     else:
                         speed = format_size(int(dl.speed)) + "/s" if dl.speed > 0 else ""
-                        info = f"{pct}  {speed}"
-                    draw_text(surf, info, (SCREEN_WIDTH - 110, y + 20), COLORS["accent"], FONT_SIZE_HINT)
+                        eta = format_eta(dl.eta_seconds())
+                        parts = [pct]
+                        if speed:
+                            parts.append(speed)
+                        if eta:
+                            parts.append(eta)
+                        size_info = format_size(dl.downloaded_bytes) + "/" + format_size(dl.total_bytes) if dl.total_bytes > 0 else ""
+                        if size_info:
+                            parts.append(size_info)
+                        info = "  ".join(parts)
+                    draw_text(surf, info, (20, y + 36), COLORS["accent"], FONT_SIZE_HINT)
                 elif dl.status == "extracting":
-                    draw_progress_bar(surf, (20, y + 24, SCREEN_WIDTH - 140, 10), 1.0, COLORS["warning"])
-                    draw_text(surf, "Extracting ZIP...", (SCREEN_WIDTH - 110, y + 20), COLORS["warning"], FONT_SIZE_HINT)
+                    draw_progress_bar(surf, (20, y + 22, SCREEN_WIDTH - 40, 10), 1.0, COLORS["warning"])
+                    draw_text(surf, "Extracting archive...", (20, y + 36), COLORS["warning"], FONT_SIZE_HINT)
                 else:
                     status_text = dl.status.upper()
                     if dl.status == "error" and dl.error:
                         status_text += f": {dl.error[:40]}"
                     elif dl.status == "done" and dl.error:
                         status_text += f" ({dl.error[:30]})"
-                    draw_text(surf, status_text, (20, y + 26), status_color, FONT_SIZE_HINT)
+                    draw_text(surf, status_text, (20, y + 24), status_color, FONT_SIZE_HINT)
                     if dl.status == "done" and not dl.error:
                         size_str = format_size(dl.downloaded_bytes)
-                        draw_text(surf, size_str, (SCREEN_WIDTH - fonts.get(FONT_SIZE_HINT).size(size_str)[0] - 20, y + 26), COLORS["text_dim"], FONT_SIZE_HINT)
+                        draw_text(surf, size_str, (20, y + 40), COLORS["text_dim"], FONT_SIZE_HINT)
 
                 if selected:
                     action = ""
@@ -907,6 +934,12 @@ class DownloadQueueScreen(Screen):
 
             self.active_list.draw(surface, render_item)
 
+            pending, total_size, total_done, errors = self._get_queue_stats(downloads)
+            if pending > 0 and total_size > 0:
+                stat = f"{pending} queued  {format_size(total_done)}/{format_size(total_size)}"
+                sw = fonts.get(FONT_SIZE_HINT).size(stat)[0]
+                draw_text(surface, stat, (SCREEN_WIDTH - sw - 12, CONTENT_Y + self.TAB_HEIGHT + 2), COLORS["text_dim"], FONT_SIZE_HINT)
+
         dl = self.active_list.get_selected()
         hints = [("Back", "B")]
         if dl:
@@ -914,7 +947,10 @@ class DownloadQueueScreen(Screen):
                 hints.insert(0, ("Cancel", "A"))
             elif dl.status in ("error", "cancelled"):
                 hints.insert(0, ("Retry", "A"))
-        hints.append(("Clear All", "START"))
+        pending, _, _, errors = self._get_queue_stats(self.active_list.items)
+        if errors > 0:
+            hints.append(("Retry All", "SELECT"))
+        hints.append(("Clear", "START"))
         hints.append(("History", "R"))
         draw_footer(surface, hints)
 
@@ -1324,6 +1360,8 @@ class App:
         self.history = DownloadHistory()
         self.download_manager = DownloadManager(history=self.history)
         self._last_bg_check = 0
+        self._last_activity = 0
+        self._idle_timeout = 2.0
 
         init_fonts()
         self.push_screen(MainMenuScreen(self))
@@ -1344,6 +1382,15 @@ class App:
     def quit(self):
         self.running = False
 
+    def _is_active(self):
+        with self.download_manager._lock:
+            has_dl = any(d.status == "downloading" and d.error != "Background download" for d in self.download_manager.queue)
+        if has_dl:
+            return True
+        if self._toast_text:
+            return True
+        return False
+
     def run(self):
         while self.running:
             events = pygame.event.get()
@@ -1354,6 +1401,9 @@ class App:
 
             self.input.update(events)
             input_events = self.input.get_events()
+
+            if input_events:
+                self._last_activity = time.time()
 
             if InputEvent.QUIT in input_events:
                 self.running = False
@@ -1379,7 +1429,8 @@ class App:
                 self._toast_text = None
 
             pygame.display.flip()
-            self.clock.tick(FPS)
+            idle = now - self._last_activity > self._idle_timeout and not self._is_active()
+            self.clock.tick(FPS_IDLE if idle else FPS)
 
     def _draw_toast(self):
         alpha = 1.0

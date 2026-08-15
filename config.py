@@ -5,6 +5,7 @@ import platform
 SCREEN_WIDTH = 640
 SCREEN_HEIGHT = 480
 FPS = 30
+FPS_IDLE = 5
 
 COLORS = {
     "bg": (15, 15, 26),
@@ -233,3 +234,17 @@ def format_size(size_bytes):
         return f"{size_bytes / (1024*1024):.1f} MB"
     else:
         return f"{size_bytes / (1024*1024*1024):.2f} GB"
+
+
+def format_eta(seconds):
+    if seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{m}m {s}s"
+    else:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{h}h {m}m"

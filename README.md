@@ -36,12 +36,18 @@ A ROM downloader for Anbernic RG35XX H (and similar handhelds) running Knulli/Ba
 
 ### On Device (Knulli / Batocera)
 
-1. Copy the `archive-downloader` folder to:
+1. Copy the `archive-downloader` folder into `/userdata/roms/ports/`:
    ```
-   /userdata/roms/ports/archive-downloader/
+   /userdata/roms/ports/
+   └── archive-downloader/
+       ├── Archive Downloader.sh
+       ├── main.py
+       └── ...
    ```
 
-2. Refresh your game list in Knulli — the app appears as **Archive Downloader** under **Ports**.
+2. Launch the app once — it auto-installs the icon and menu entry.
+
+3. Refresh your game list in Knulli — the app appears as **Archive Downloader** under **Ports**.
 
 ### On PC (for development)
 

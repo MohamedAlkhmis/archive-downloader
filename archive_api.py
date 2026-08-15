@@ -6,6 +6,7 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
+import shutil
 import zipfile
 
 
@@ -177,6 +178,15 @@ class Download:
         self.speed = 0
         self.status = "pending"
         self.error = None
+        self.start_time = 0
+
+    def eta_seconds(self):
+        if self.speed <= 0 or self.total_bytes <= 0:
+            return -1
+        remaining = self.total_bytes - self.downloaded_bytes
+        if remaining <= 0:
+            return 0
+        return int(remaining / self.speed)
 
     def to_dict(self):
         return {
@@ -210,6 +220,16 @@ class DownloadManager:
         self._lock = threading.Lock()
         self.history = history
 
+    def check_disk_space(self, dest_path, needed=0):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+            usage = shutil.disk_usage(dest_path)
+            if needed > 0 and usage.free < needed:
+                return False, usage.free
+            return True, usage.free
+        except OSError:
+            return True, 0
+
     def add(self, url, dest_path, filename):
         dl = Download(url, dest_path, filename)
         with self._lock:
@@ -238,6 +258,21 @@ class DownloadManager:
         with self._lock:
             if dl in self.queue:
                 self.queue.remove(dl)
+
+    def retry_all_failed(self):
+        retried = 0
+        with self._lock:
+            for dl in self.queue:
+                if dl.status == "error":
+                    dl.status = "pending"
+                    dl.progress = 0.0
+                    dl.downloaded_bytes = 0
+                    dl.speed = 0
+                    dl.error = None
+                    retried += 1
+        if retried:
+            self._start_next()
+        return retried
 
     def remove_completed(self):
         with self._lock:
@@ -457,6 +492,7 @@ class DownloadManager:
     def _download_worker(self):
         dl = self.current
         dl.status = "downloading"
+        dl.start_time = time.time()
         safe_name = dl.filename.replace("\\", "/").split("/")[-1]
         dl.filename = safe_name
         os.makedirs(dl.dest_path, exist_ok=True)
