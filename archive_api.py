@@ -246,8 +246,6 @@ class DownloadManager:
     def retry(self, dl):
         if dl.status in ("error", "cancelled"):
             dl.status = "pending"
-            dl.progress = 0.0
-            dl.downloaded_bytes = 0
             dl.speed = 0
             dl.error = None
             self._start_next()
@@ -265,8 +263,6 @@ class DownloadManager:
             for dl in self.queue:
                 if dl.status == "error":
                     dl.status = "pending"
-                    dl.progress = 0.0
-                    dl.downloaded_bytes = 0
                     dl.speed = 0
                     dl.error = None
                     retried += 1
@@ -475,10 +471,20 @@ class DownloadManager:
 
     def _download_segment(self, url, start, end, part_path, dl, seg_progress, seg_idx):
         headers = self._make_headers()
-        headers["Range"] = f"bytes={start}-{end}"
+        seg_size = end - start + 1
+        existing = 0
+        if os.path.exists(part_path):
+            existing = os.path.getsize(part_path)
+            if existing >= seg_size:
+                seg_progress[seg_idx] = seg_size
+                return True
+            seg_progress[seg_idx] = existing
+        actual_start = start + existing
+        headers["Range"] = f"bytes={actual_start}-{end}"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=120) as resp:
-            with open(part_path, "wb") as f:
+            mode = "ab" if existing > 0 else "wb"
+            with open(part_path, mode) as f:
                 while True:
                     if self._cancel:
                         return False
@@ -503,8 +509,6 @@ class DownloadManager:
             if self._cancel:
                 dl.status = "cancelled"
                 break
-            dl.downloaded_bytes = 0
-            dl.progress = 0.0
             dl.speed = 0
             dl.error = None
             try:
@@ -515,7 +519,7 @@ class DownloadManager:
                 if use_multi:
                     self._download_multi(dl, filepath, file_size)
                 else:
-                    self._download_single(dl, filepath)
+                    self._download_single(dl, filepath, supports_range)
 
                 if dl.status == "downloading":
                     dl.progress = 1.0
@@ -525,13 +529,10 @@ class DownloadManager:
                         self.history.add(dl.filename, dl.url, dl.dest_path, dl.total_bytes)
                 break
             except urllib.error.HTTPError as e:
-                self._cleanup_file(filepath)
-                if e.code == 403:
-                    dl.error = "Login required on archive.org"
-                    dl.status = "error"
-                    break
-                elif e.code == 404:
-                    dl.error = "File not found"
+                if e.code in (403, 404):
+                    self._cleanup_file(filepath)
+                    self._cleanup_parts(filepath)
+                    dl.error = "Login required on archive.org" if e.code == 403 else "File not found"
                     dl.status = "error"
                     break
                 elif attempt < max_retries - 1:
@@ -541,7 +542,6 @@ class DownloadManager:
                     dl.error = f"HTTP {e.code}: {e.reason}"
                     dl.status = "error"
             except Exception as e:
-                self._cleanup_file(filepath)
                 if attempt < max_retries - 1:
                     dl.error = f"Retry {attempt + 2}/{max_retries}..."
                     time.sleep(2)
@@ -556,13 +556,99 @@ class DownloadManager:
             except OSError:
                 pass
 
-    def _download_single(self, dl, filepath):
+    def _cleanup_parts(self, filepath):
+        for i in range(self.SEGMENTS + 1):
+            p = filepath + f".part{i}"
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def _get_cache_dirs(self):
+        from config import ROM_BASE_PATH
+        dirs = set()
+        with self._lock:
+            for dl in self.queue:
+                dirs.add(dl.dest_path)
+        if self.history:
+            for entry in self.history.entries:
+                dp = entry.get("dest_path", "")
+                if dp:
+                    dirs.add(dp)
+        if os.path.exists(ROM_BASE_PATH):
+            try:
+                for d in os.listdir(ROM_BASE_PATH):
+                    full = os.path.join(ROM_BASE_PATH, d)
+                    if os.path.isdir(full):
+                        dirs.add(full)
+            except OSError:
+                pass
+        return dirs
+
+    def _is_part_file(self, name):
+        for i in range(self.SEGMENTS + 1):
+            if name.endswith(f".part{i}"):
+                return True
+        return False
+
+    def get_cache_size(self):
+        total = 0
+        for d in self._get_cache_dirs():
+            try:
+                for f in os.listdir(d):
+                    if self._is_part_file(f):
+                        total += os.path.getsize(os.path.join(d, f))
+            except OSError:
+                pass
+        return total
+
+    def clear_cache(self):
+        active_parts = set()
+        with self._lock:
+            for dl in self.queue:
+                if dl.status in ("downloading", "pending"):
+                    fp = os.path.join(dl.dest_path, dl.filename)
+                    for i in range(self.SEGMENTS + 1):
+                        active_parts.add(fp + f".part{i}")
+        cleared = 0
+        for d in self._get_cache_dirs():
+            try:
+                for f in os.listdir(d):
+                    if not self._is_part_file(f):
+                        continue
+                    full = os.path.join(d, f)
+                    if full in active_parts:
+                        continue
+                    try:
+                        cleared += os.path.getsize(full)
+                        os.remove(full)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        return cleared
+
+    def _download_single(self, dl, filepath, supports_range=False):
         headers = self._make_headers()
+        resume_from = 0
+        if supports_range and os.path.exists(filepath):
+            resume_from = os.path.getsize(filepath)
+            if dl.total_bytes > 0 and resume_from >= dl.total_bytes:
+                dl.downloaded_bytes = dl.total_bytes
+                return
+            if resume_from > 0:
+                headers["Range"] = f"bytes={resume_from}-"
+        dl.downloaded_bytes = resume_from
+        if dl.total_bytes > 0 and resume_from > 0:
+            dl.progress = resume_from / dl.total_bytes
         req = urllib.request.Request(dl.url, headers=headers)
         with urllib.request.urlopen(req, timeout=60) as resp:
-            dl.total_bytes = int(resp.headers.get("Content-Length", 0))
+            if resume_from == 0:
+                dl.total_bytes = int(resp.headers.get("Content-Length", 0))
             start_time = time.time()
-            with open(filepath, "wb") as f:
+            mode = "ab" if resume_from > 0 else "wb"
+            with open(filepath, mode) as f:
                 while True:
                     if self._cancel:
                         dl.status = "cancelled"
@@ -576,7 +662,7 @@ class DownloadManager:
                         dl.progress = dl.downloaded_bytes / dl.total_bytes
                     elapsed = time.time() - start_time
                     if elapsed > 0:
-                        dl.speed = dl.downloaded_bytes / elapsed
+                        dl.speed = (dl.downloaded_bytes - resume_from) / elapsed
 
     def _download_multi(self, dl, filepath, file_size):
         seg_count = min(self.SEGMENTS, max(1, file_size // self.MIN_SEGMENT_SIZE))
@@ -589,8 +675,17 @@ class DownloadManager:
             segments.append((start, end, part_path))
 
         seg_progress = [0] * seg_count
+        for i, (start, end, part_path) in enumerate(segments):
+            if os.path.exists(part_path):
+                seg_progress[i] = min(os.path.getsize(part_path), end - start + 1)
+
+        dl.downloaded_bytes = sum(seg_progress)
+        if file_size > 0:
+            dl.progress = dl.downloaded_bytes / file_size
+
         errors = [None] * seg_count
         start_time = time.time()
+        initial_bytes = dl.downloaded_bytes
 
         def run_seg(idx, start, end, part_path):
             try:
@@ -611,7 +706,7 @@ class DownloadManager:
                 dl.progress = dl.downloaded_bytes / file_size
             elapsed = time.time() - start_time
             if elapsed > 0:
-                dl.speed = dl.downloaded_bytes / elapsed
+                dl.speed = (dl.downloaded_bytes - initial_bytes) / elapsed
             if self._cancel:
                 break
 
@@ -620,14 +715,10 @@ class DownloadManager:
 
         if self._cancel:
             dl.status = "cancelled"
-            for _, _, part_path in segments:
-                self._cleanup_file(part_path)
             return
 
         for e in errors:
             if e is not None:
-                for _, _, part_path in segments:
-                    self._cleanup_file(part_path)
                 raise e
 
         with open(filepath, "wb") as out:

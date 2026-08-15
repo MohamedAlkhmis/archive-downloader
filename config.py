@@ -197,6 +197,48 @@ def set_bg_download_enabled(enabled):
     save_settings(settings)
 
 
+FAVORITES_FILE = os.path.join(CONFIG_DIR, "favorites.json")
+
+
+def load_favorites():
+    if os.path.exists(FAVORITES_FILE):
+        try:
+            with open(FAVORITES_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return []
+
+
+def save_favorites(favorites):
+    try:
+        with open(FAVORITES_FILE, "w") as f:
+            json.dump(favorites, f, indent=2)
+    except OSError:
+        pass
+
+
+def add_favorite(identifier, title, system_dir=None):
+    favs = load_favorites()
+    for f in favs:
+        if f["identifier"] == identifier:
+            return False
+    favs.insert(0, {"identifier": identifier, "title": title, "system_dir": system_dir})
+    save_favorites(favs)
+    return True
+
+
+def remove_favorite(identifier):
+    favs = load_favorites()
+    favs = [f for f in favs if f["identifier"] != identifier]
+    save_favorites(favs)
+
+
+def is_favorite(identifier):
+    favs = load_favorites()
+    return any(f["identifier"] == identifier for f in favs)
+
+
 def get_rom_path(system_dir):
     custom = get_custom_paths()
     if system_dir in custom:

@@ -435,6 +435,7 @@ class MainMenuScreen(Screen):
     ITEMS = [
         {"label": "Browse by System", "icon": "SYS", "desc": "Browse curated console collections"},
         {"label": "Search Archive.org", "icon": "SRC", "desc": "Search for any content on archive.org"},
+        {"label": "Favorites", "icon": "FAV", "desc": "Bookmarked archive.org items"},
         {"label": "Downloads", "icon": "DWN", "desc": "View active and completed downloads"},
         {"label": "Settings", "icon": "SET", "desc": "Configure paths and button mapping"},
         {"label": "Exit", "icon": "END", "desc": "Close the application"},
@@ -455,10 +456,12 @@ class MainMenuScreen(Screen):
                 elif sel == 1:
                     self.app.push_screen(SearchScreen(self.app))
                 elif sel == 2:
-                    self.app.push_screen(DownloadQueueScreen(self.app))
+                    self.app.push_screen(FavoritesScreen(self.app))
                 elif sel == 3:
-                    self.app.push_screen(SettingsScreen(self.app))
+                    self.app.push_screen(DownloadQueueScreen(self.app))
                 elif sel == 4:
+                    self.app.push_screen(SettingsScreen(self.app))
+                elif sel == 5:
                     self.app.quit()
 
     def draw(self, surface):
@@ -585,6 +588,17 @@ class SearchResultsScreen(Screen):
                     self.app.push_screen(FileListScreen(self.app, item["identifier"], item.get("title", item["identifier"]), self.system_dir))
             elif event == InputEvent.BACK:
                 self.app.pop_screen()
+            elif event == InputEvent.START:
+                item = self.list.get_selected()
+                if item and not item.get("_load_more"):
+                    ident = item["identifier"]
+                    title = item.get("title", ident)
+                    if is_favorite(ident):
+                        remove_favorite(ident)
+                        self.app.toast("Removed from favorites", COLORS["warning"])
+                    else:
+                        add_favorite(ident, title, self.system_dir)
+                        self.app.toast("Added to favorites", COLORS["success"])
 
     def update(self):
         if self.task and self.task.done:
@@ -645,10 +659,13 @@ class SearchResultsScreen(Screen):
                 draw_text(surf, sub, (20, y + 28), COLORS["text_dim"], FONT_SIZE_SMALL, max_width=SCREEN_WIDTH - 50)
 
             self.list.draw(surface, render_item)
-        draw_footer(surface, [("Open", "A"), ("Back", "B"), ("Page", "L/R")])
+        draw_footer(surface, [("Open", "A"), ("Back", "B"), ("Fav", "START"), ("Page", "L/R")])
 
 
 class FileListScreen(Screen):
+    SORT_MODES = ["name", "size_asc", "size_desc"]
+    SORT_LABELS = {"name": "Name", "size_asc": "Size (small)", "size_desc": "Size (large)"}
+
     def __init__(self, app, identifier, title, system_dir=None):
         super().__init__(app)
         self.identifier = identifier
@@ -661,6 +678,7 @@ class FileListScreen(Screen):
         self.all_files = []
         self.show_all = False
         self.login_required = False
+        self.sort_mode = "name"
 
     def on_enter(self):
         from archive_api import AsyncTask, ArchiveAPI
@@ -693,10 +711,25 @@ class FileListScreen(Screen):
                 self.app.pop_screen()
             elif event == InputEvent.START:
                 self.show_all = not self.show_all
-                if self.show_all:
-                    self.list.set_items(self.all_files)
-                else:
-                    self.list.set_items([f for f in self.all_files if any(f["name"].lower().endswith(e) for e in ROM_EXTENSIONS)])
+                self._apply_sort()
+            elif event == InputEvent.SELECT:
+                idx = self.SORT_MODES.index(self.sort_mode)
+                self.sort_mode = self.SORT_MODES[(idx + 1) % len(self.SORT_MODES)]
+                self._apply_sort()
+                self.app.toast(f"Sort: {self.SORT_LABELS[self.sort_mode]}", COLORS["accent"])
+
+    def _apply_sort(self):
+        if self.show_all:
+            files = list(self.all_files)
+        else:
+            files = [f for f in self.all_files if any(f["name"].lower().endswith(e) for e in ROM_EXTENSIONS)]
+        if self.sort_mode == "size_asc":
+            files.sort(key=lambda x: x["size"])
+        elif self.sort_mode == "size_desc":
+            files.sort(key=lambda x: x["size"], reverse=True)
+        else:
+            files.sort(key=lambda x: x["name"].lower())
+        self.list.set_items(files)
 
     def update(self):
         if self.task and self.task.done:
@@ -710,7 +743,7 @@ class FileListScreen(Screen):
                 else:
                     self.all_files = result.get("files", [])
                     self.login_required = result.get("login_required", False)
-                    self.list.set_items(self.all_files)
+                    self._apply_sort()
                     if not self.all_files:
                         self.error = "No ROM files found in this item"
             self.task = None
@@ -751,7 +784,7 @@ class FileListScreen(Screen):
 
             file_list.draw(surface, render_item)
 
-        draw_footer(surface, [("Download", "A"), ("Back", "B"), ("Page", "L/R")])
+        draw_footer(surface, [("Download", "A"), ("Back", "B"), ("Sort", "SEL"), ("Page", "L/R")])
 
 
 class DownloadQueueScreen(Screen):
@@ -797,8 +830,7 @@ class DownloadQueueScreen(Screen):
         for event in events:
             if event == InputEvent.CONFIRM and dl:
                 if dl.status in ("downloading", "pending"):
-                    self.app.download_manager.cancel(dl)
-                    self.app.toast("Cancelled", COLORS["warning"])
+                    self.app.push_screen(ConfirmCancelScreen(self.app, dl))
                 elif dl.status in ("error", "cancelled"):
                     self.app.download_manager.retry(dl)
                     self.app.toast("Retrying...", COLORS["accent"])
@@ -982,6 +1014,87 @@ class DownloadQueueScreen(Screen):
         draw_footer(surface, hints)
 
 
+class ConfirmCancelScreen(Screen):
+    def __init__(self, app, download):
+        super().__init__(app)
+        self.download = download
+        self.selected = 1
+
+    def handle_input(self, events):
+        for event in events:
+            if event == InputEvent.UP or event == InputEvent.DOWN:
+                self.selected = 1 - self.selected
+            elif event == InputEvent.CONFIRM:
+                if self.selected == 0:
+                    self.app.download_manager.cancel(self.download)
+                    self.app.toast("Cancelled", COLORS["warning"])
+                    self.app.pop_screen()
+                else:
+                    self.app.pop_screen()
+            elif event == InputEvent.BACK:
+                self.app.pop_screen()
+
+    def draw(self, surface):
+        draw_header(surface, "Cancel Download?")
+        name = self.download.filename
+        draw_text(surface, "Cancel this download?", (20, CONTENT_Y + 30), COLORS["text"], FONT_SIZE_BODY)
+        draw_text(surface, name, (20, CONTENT_Y + 58), COLORS["text_dim"], FONT_SIZE_SMALL, max_width=SCREEN_WIDTH - 40)
+        if self.download.total_bytes > 0:
+            pct = int(self.download.progress * 100)
+            draw_text(surface, f"{pct}% complete ({format_size(self.download.downloaded_bytes)})", (20, CONTENT_Y + 80), COLORS["text_dim"], FONT_SIZE_SMALL)
+
+        for i, label in enumerate(["Yes, cancel", "No, keep downloading"]):
+            y = CONTENT_Y + 120 + i * 44
+            if i == self.selected:
+                draw_rounded_rect(surface, COLORS["accent_dark"], (16, y, SCREEN_WIDTH - 32, 38), 6)
+            color = COLORS["error"] if i == 0 and self.selected == 0 else COLORS["text"]
+            draw_text(surface, label, (30, y + 10), color, FONT_SIZE_BODY, bold=(i == self.selected))
+
+        draw_footer(surface, [("Select", "A"), ("Back", "B")])
+
+
+class FavoritesScreen(Screen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.list = ListView(item_height=48)
+        self._refresh()
+
+    def _refresh(self):
+        self.favorites = load_favorites()
+        self.list.set_items(self.favorites)
+
+    def handle_input(self, events):
+        self.list.handle_input(events)
+        for event in events:
+            if event == InputEvent.CONFIRM:
+                fav = self.list.get_selected()
+                if fav:
+                    self.app.push_screen(FileListScreen(self.app, fav["identifier"], fav["title"], fav.get("system_dir")))
+            elif event == InputEvent.BACK:
+                self.app.pop_screen()
+            elif event == InputEvent.START:
+                fav = self.list.get_selected()
+                if fav:
+                    remove_favorite(fav["identifier"])
+                    self.app.toast("Removed from favorites", COLORS["warning"])
+                    self._refresh()
+
+    def draw(self, surface):
+        draw_header(surface, "Favorites")
+        if not self.favorites:
+            draw_message(surface, "No favorites yet — press START to bookmark", COLORS["text_dim"])
+        else:
+            def render_item(surf, fav, idx, y, selected):
+                draw_text(surf, fav["title"], (20, y + 6), COLORS["text"], FONT_SIZE_BODY, bold=selected, max_width=SCREEN_WIDTH - 50)
+                sub = fav["identifier"]
+                if fav.get("system_dir"):
+                    sub += f"  |  {fav['system_dir'].upper()}"
+                draw_text(surf, sub, (20, y + 28), COLORS["text_dim"], FONT_SIZE_SMALL, max_width=SCREEN_WIDTH - 50)
+
+            self.list.draw(surface, render_item)
+        draw_footer(surface, [("Open", "A"), ("Back", "B"), ("Remove", "START")])
+
+
 class SettingsScreen(Screen):
     def __init__(self, app):
         super().__init__(app)
@@ -1008,11 +1121,16 @@ class SettingsScreen(Screen):
 
         bg_on = get_bg_download_enabled()
 
+        cache_size = self.app.download_manager.get_cache_size()
+        cache_value = f"{format_size(cache_size)} of partial downloads" if cache_size > 0 else "No cached data"
+
         self.items = [
             {"label": login_label, "value": login_value, "key": "login", "icon": login_icon,
              "icon_color": COLORS["success"] if creds else COLORS["text_dim"]},
             {"label": "Background Downloads", "value": "ON - Downloads continue after exit" if bg_on else "OFF - Downloads stop on exit", "key": "bg_download", "icon": "BG",
              "icon_color": COLORS["success"] if bg_on else COLORS["text_dim"]},
+            {"label": "Clear Download Cache", "value": cache_value, "key": "cache", "icon": "CLR",
+             "icon_color": COLORS["warning"] if cache_size > 0 else COLORS["text_dim"]},
             {"label": "Manage Systems", "value": f"{enabled_count} of {total_count} systems enabled", "key": "systems", "icon": "SYS",
              "icon_color": COLORS["accent"]},
             {"label": "System Paths", "value": paths_value, "key": "paths", "icon": "DIR",
@@ -1043,6 +1161,13 @@ class SettingsScreen(Screen):
                     set_bg_download_enabled(not cur)
                     self._refresh_items()
                     self.app.toast("Background downloads " + ("OFF" if cur else "ON"), COLORS["accent"])
+                elif item["key"] == "cache":
+                    cleared = self.app.download_manager.clear_cache()
+                    if cleared > 0:
+                        self.app.toast(f"Cleared {format_size(cleared)}", COLORS["success"])
+                    else:
+                        self.app.toast("Nothing to clear", COLORS["text_dim"])
+                    self._refresh_items()
                 elif item["key"] == "systems":
                     self.app.push_screen(ManageSystemsScreen(self.app, self))
                 elif item["key"] == "paths":

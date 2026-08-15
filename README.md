@@ -14,8 +14,13 @@ A ROM downloader for Anbernic RG35XX H (and similar handhelds) running Knulli/Ba
 - Paginated results with load-more
 - Multi-connection downloads (4 parallel segments) with progress bar and speed display
 - Background downloads — keep downloading after exiting the app, play games while waiting
-- Background download indicator in the app header (blinking BG icon)
+- Background download indicator in the app header
 - Toggle background downloads on/off from Settings
+- Resume interrupted downloads — retries continue from where they left off
+- Favorites — bookmark archive.org items for quick access (START to toggle)
+- Sort file lists by name or size (SELECT to cycle)
+- Confirm dialog before cancelling a download
+- Download cache management — clear partial downloads from Settings
 - Auto-extracts archives after download (ZIP, 7z, RAR, TAR, GZ)
 - Smart file routing — downloads go to the correct system folder based on file extension
 - Per-system custom download paths
@@ -68,13 +73,15 @@ ROMs download to a `downloads/` subfolder when running on PC.
 | Select / Confirm | A | Enter / Space |
 | Back | B | Escape / Backspace |
 | Switch Tab / Page | L1 / R1 | Page Up / Page Down |
-| Menu Action | Start | Tab |
+| Bookmark / Menu | Start | Tab |
+| Sort / Retry All | Select | — |
 | Quit App | Select + Start | — |
 
 ## Settings
 
 - **Archive.org Account** — Log in to access restricted collections
 - **Background Downloads** — Toggle on/off; when on, downloads continue after exiting the app
+- **Clear Download Cache** — Remove partial download files to free up space
 - **Manage Systems** — Toggle which systems appear in Browse (A to toggle, START for all/none)
 - **System Paths** — Set custom download paths per system (START to reset)
 
@@ -98,6 +105,7 @@ archive-downloader/
 - `settings.json` — Enabled systems, custom paths, background download toggle
 - `credentials.json` — Archive.org login cookies
 - `history.json` — Download history
+- `favorites.json` — Bookmarked archive.org items
 - `queue.json` — Active download queue (shared between app and background process)
 - `bg.pid` — Background download process ID
 
